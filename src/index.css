@@ -1,0 +1,260 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background-color: #f8fafc;
+    color: #0f172a;
+    margin: 0;
+    padding: 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100%;
+    touch-action: manipulation;
+  }
+
+  #root {
+    overflow-x: hidden;
+    width: 100%;
+    max-width: 100%;
+    min-height: 100vh;
+  }
+
+  /* Prevent automatic iOS Safari zoom-in on focus by enforcing 16px on inputs */
+  @media screen and (max-width: 768px) {
+    input, select, textarea {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Thin Emerald Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #f1f5f9;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+    border-radius: 9999px;
+    border: 2px solid #f1f5f9;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #047857;
+  }
+}
+
+@layer utilities {
+  /* Ambient Multi-layer Background Mesh */
+  .bg-ambient-light {
+    background-color: #f8fafc;
+    background-image: 
+      radial-gradient(at 15% 10%, rgba(16, 185, 129, 0.09) 0px, transparent 45%),
+      radial-gradient(at 85% 15%, rgba(245, 158, 11, 0.08) 0px, transparent 40%),
+      radial-gradient(at 50% 50%, rgba(14, 165, 233, 0.04) 0px, transparent 60%),
+      radial-gradient(at 10% 90%, rgba(16, 185, 129, 0.07) 0px, transparent 50%),
+      radial-gradient(at 90% 90%, rgba(217, 119, 6, 0.08) 0px, transparent 45%);
+    background-attachment: fixed;
+  }
+
+  /* ========================================================
+     PREMIUM GLASSMORPHISM DESIGN SYSTEM
+     ======================================================== */
+
+  /* 1. Primary Frosted Glass Card (Luminous Light Mode) */
+  .glass-card-premium {
+    background: rgba(255, 255, 255, 0.82);
+    backdrop-filter: blur(24px) saturate(190%);
+    -webkit-backdrop-filter: blur(24px) saturate(190%);
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 
+      0 20px 45px -15px rgba(15, 23, 42, 0.07),
+      0 2px 6px 0 rgba(0, 0, 0, 0.02),
+      inset 0 1px 1px 0 rgba(255, 255, 255, 0.95),
+      inset 0 -1px 1px 0 rgba(0, 0, 0, 0.02);
+  }
+
+  /* 2. Interactive Glass Card with Specular Hover Lift */
+  .glass-card-interactive {
+    transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .glass-card-interactive:hover {
+    background: rgba(255, 255, 255, 0.94);
+    transform: translateY(-4px);
+    border-color: rgba(16, 185, 129, 0.4);
+    box-shadow: 
+      0 30px 65px -15px rgba(16, 185, 129, 0.15),
+      0 6px 16px -2px rgba(15, 23, 42, 0.05),
+      inset 0 1px 2px 0 rgba(255, 255, 255, 1);
+  }
+
+  /* 3. Obsidian Dark Frosted Glass (Hero & Dark Sections) */
+  .glass-card-dark {
+    background: rgba(15, 23, 42, 0.72);
+    backdrop-filter: blur(28px) saturate(180%);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 
+      0 25px 50px -12px rgba(0, 0, 0, 0.5),
+      inset 0 1px 1px 0 rgba(255, 255, 255, 0.18),
+      inset 0 -1px 1px 0 rgba(0, 0, 0, 0.3);
+  }
+
+  /* 4. Luxury Dark Glass Interactive Hover */
+  .glass-card-dark-interactive {
+    transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .glass-card-dark-interactive:hover {
+    background: rgba(15, 23, 42, 0.85);
+    transform: translateY(-4px);
+    border-color: rgba(16, 185, 129, 0.45);
+    box-shadow: 
+      0 35px 70px -15px rgba(16, 185, 129, 0.25),
+      inset 0 1px 2px 0 rgba(255, 255, 255, 0.28);
+  }
+
+  /* 5. Frosted Glass Pills & Badges */
+  .glass-pill {
+    background: rgba(255, 255, 255, 0.75);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 
+      0 4px 15px -2px rgba(0, 0, 0, 0.03),
+      inset 0 1px 1px 0 rgba(255, 255, 255, 0.95);
+  }
+
+  .glass-pill-dark {
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    box-shadow: 
+      0 4px 20px -2px rgba(0, 0, 0, 0.3),
+      inset 0 1px 1px 0 rgba(255, 255, 255, 0.15);
+  }
+
+  /* 6. High-Precision Glass Inputs */
+  .glass-input {
+    background: rgba(255, 255, 255, 0.75);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(203, 213, 225, 0.7);
+    box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.02);
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .glass-input:focus {
+    background: rgba(255, 255, 255, 0.95);
+    border-color: #10b981;
+    box-shadow: 
+      0 0 0 3px rgba(16, 185, 129, 0.18),
+      inset 0 1px 2px 0 rgba(255, 255, 255, 1);
+  }
+
+  /* 7. Classic backward-compatible glass utilities */
+  .glass {
+    background: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+  }
+
+  .glass-dark {
+    background: rgba(15, 23, 42, 0.78);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+
+  .glass-card {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    box-shadow: 0 12px 36px 0 rgba(16, 185, 129, 0.07);
+  }
+
+  /* Royal Gold & Diwali festive glow */
+  .gold-glow {
+    box-shadow: 0 0 25px rgba(245, 158, 11, 0.4);
+  }
+
+  .emerald-glow {
+    box-shadow: 0 0 25px rgba(16, 185, 129, 0.4);
+  }
+
+  .gold-border-gradient {
+    border-image: linear-gradient(to right, #f59e0b, #fef08a, #d97706) 1;
+  }
+
+  /* Hide scrollbar for horizontal scroll containers */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Gradient text utilities */
+  .gradient-text {
+    background: linear-gradient(135deg, #059669 0%, #0d9488 50%, #2563eb 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .gradient-text-gold {
+    background: linear-gradient(135deg, #d97706 0%, #f59e0b 50%, #b45309 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .gradient-text-emerald {
+    background: linear-gradient(135deg, #059669 0%, #10b981 50%, #34d399 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  /* Shimmer / light reflection sweep */
+  .shimmer-glass {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer-glass::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 50%;
+    height: 100%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(255, 255, 255, 0.25),
+      transparent
+    );
+    transform: skewX(-20deg);
+    animation: glass-sheen 6s infinite ease-in-out;
+  }
+
+  @keyframes glass-sheen {
+    0% { left: -100%; }
+    20%, 100% { left: 200%; }
+  }
+}
