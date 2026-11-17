@@ -19,7 +19,9 @@ import { MLM_COMMISSION_RATES, formatINR, safeText } from '../lib/constants';
 import GenerationTreeChart from '../components/GenerationTreeChart';
 import { 
   computeUnlimitedGenerationTree, 
-  getMemberFullName 
+  getMemberFullName,
+  formatMemberJoiningDate,
+  round2
 } from '../utils/mlmUtils';
 
 export default function Team() {
@@ -37,14 +39,21 @@ export default function Team() {
   // Fetch all users to construct 12-level tree
   useEffect(() => {
     const usersRef = ref(rtdb, 'users');
-    const unsubscribe = onValue(usersRef, (snapshot) => {
-      if (snapshot.exists()) {
-        setAllUsers(snapshot.val());
-      } else {
-        setAllUsers({});
+    const unsubscribe = onValue(
+      usersRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          setAllUsers(snapshot.val());
+        } else {
+          setAllUsers({});
+        }
+        setLoading(false);
+      },
+      (err) => {
+        console.warn('Team RTDB listener warning:', err);
+        setLoading(false);
       }
-      setLoading(false);
-    });
+    );
 
     return () => unsubscribe();
   }, []);
@@ -273,7 +282,7 @@ export default function Team() {
                         <div className="font-mono text-[11px] text-gray-700">{safeText(member.sponsorIdResolved || member.sponsorId || '-')}</div>
                       </td>
                       <td className="py-3 px-3 border-r border-gray-300 font-mono text-black text-xs whitespace-nowrap">
-                        {member.createdAt ? new Date(member.createdAt).toLocaleDateString('hi-IN') : (member.applicationDate || '-')}
+                        {formatMemberJoiningDate(member)}
                       </td>
                       <td className="py-3 px-3 border-r border-gray-300 text-right font-mono font-bold text-black text-sm">
                         {formatINR(Number(member.packageAmount || member.packageTier || member.selfBusiness || 500))}
@@ -282,10 +291,10 @@ export default function Team() {
                         {member.directTeamCount || 0} सदस्य
                       </td>
                       <td className="py-3 px-3 border-r border-gray-300 text-right font-mono font-bold text-black text-sm">
-                        {formatINR(member.directBusinessCalculated || member.packageAmount || 500)}
+                        {formatINR(member.directBusinessCalculated ?? 0)}
                       </td>
                       <td className="py-3 px-3 text-right font-mono font-bold text-emerald-800 text-sm">
-                        +{formatINR(member.commissionGenerated || Math.round((Number(member.packageAmount || 500) * (currentLevelInfo?.rate || 0)) / 100))}
+                        +{formatINR(member.commissionGenerated ?? round2((Number(member.packageAmount || 500) * (currentLevelInfo?.rate || 0)) / 100))}
                       </td>
                     </tr>
                   ))}

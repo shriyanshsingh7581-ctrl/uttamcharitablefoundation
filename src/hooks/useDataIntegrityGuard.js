@@ -5,6 +5,7 @@ import {
   normalizeSponsorId, 
   getMemberFullName, 
   computeUnlimitedGenerationTree,
+  parseAmount,
   normId 
 } from '../utils/mlmUtils';
 import { runDailyClosing } from '../utils/closingEngine';
@@ -82,7 +83,7 @@ export function useDataIntegrityGuard() {
           }
 
           // Ensure numeric packageTier & packageAmount
-          const tierNum = Number(u.packageTier || u.packageAmount || 500);
+          const tierNum = parseAmount(u);
           if (u.packageTier !== tierNum) {
             updates[`/users/${uid}/packageTier`] = tierNum;
             modified++;
@@ -104,19 +105,7 @@ export function useDataIntegrityGuard() {
           // Takes the MAX across all amount fields so a stale lower value (e.g. packageTier=500
           // when selfBusiness=5100) never wins. Specifically fixes UCWF-2026-0835 and any
           // similar record where these fields got out of sync.
-          const _parseOne = (v) => {
-            if (!v) return 0;
-            const n = Number(String(v).replace(/[^0-9.]/g, ''));
-            return isNaN(n) ? 0 : n;
-          };
-          const parsedSelfBiz = Math.max(
-            _parseOne(u.selfBusiness),
-            _parseOne(u.packageTier),
-            _parseOne(u.packageAmount),
-            _parseOne(u.donationAmount),
-            _parseOne(u.amount),
-            0
-          );
+          const parsedSelfBiz = parseAmount(u);
           const currentTotalBiz = Number(u.totalBusiness || 0);
           const currentSelfBiz = Number(u.selfBusiness || 0);
           const currentPkgTier = Number(u.packageTier || 0);

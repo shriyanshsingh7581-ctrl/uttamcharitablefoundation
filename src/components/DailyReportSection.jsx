@@ -36,7 +36,10 @@ import {
   calculateJoinCommission,
   computeUnlimitedGenerationTree,
   buildMember12LevelReport,
-  parseAmount
+  parseAmount,
+  parseAnyDateToEpochMs,
+  epochMsToISTDateString,
+  extractMemberJoinDateIST
 } from '../utils/mlmUtils';
 
 /**
@@ -67,22 +70,8 @@ export default function DailyReportSection({
   // Canonical active member for voucher generation
   const activeVoucherMember = scopedUser || Object.values(users).find(u => u && (u.memberId === 'UCWF-0001' || u.memberId === 'UCWF-2026-6401' || u.memberId === 'UCWF-2026-8647' || u.memberId === 'UCWF-2026-0835')) || Object.values(users)[0] || null;
 
-  // Helper to extract YYYY-MM-DD (IST) from any member join timestamp
-  const extractJoinDateIST = (m) => {
-    if (!m) return '';
-    const raw = m.createdAt || m.applicationDate || m.joinDate || m.timestamp;
-    if (!raw) return '';
-    if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
-      return raw.slice(0, 10);
-    }
-    try {
-      const d = new Date(raw);
-      if (!isNaN(d.getTime())) {
-        return getISTDateString(d);
-      }
-    } catch {}
-    return '';
-  };
+  // Helper to extract YYYY-MM-DD (IST) from any member join timestamp (handles DD/MM/YYYY, ISO, epoch)
+  const extractJoinDateIST = (m) => extractMemberJoinDateIST(m);
 
   // Format YYYY-MM-DD to DD/MM/YYYY with weekday
   const formatDisplayDate = (dateStr) => {
@@ -99,13 +88,14 @@ export default function DailyReportSection({
     return dateStr;
   };
 
-  // Format timestamp to DD/MM/YYYY hh:mm A
+  // Format timestamp to DD/MM/YYYY hh:mm A (never returns Invalid Date)
   const formatDateTime = (raw, fallbackDateStr = '') => {
     if (!raw) return fallbackDateStr ? formatDisplayDate(fallbackDateStr) : '-';
-    try {
-      const d = new Date(raw);
-      if (!isNaN(d.getTime())) {
-        return d.toLocaleString('en-IN', {
+    const ms = parseAnyDateToEpochMs(raw);
+    if (ms > 0) {
+      try {
+        return new Date(ms).toLocaleString('en-IN', {
+          timeZone: 'Asia/Kolkata',
           day: '2-digit',
           month: '2-digit',
           year: 'numeric',
@@ -113,9 +103,9 @@ export default function DailyReportSection({
           minute: '2-digit',
           hour12: true
         });
-      }
-    } catch {}
-    return String(raw);
+      } catch {}
+    }
+    return fallbackDateStr ? formatDisplayDate(fallbackDateStr) : String(raw);
   };
 
   // Build tree metrics map for all users to get accurate directBusiness and totalCommission
@@ -160,17 +150,10 @@ export default function DailyReportSection({
 
     return filteredByScope.map(m => {
       const joinDateStr = extractJoinDateIST(m);
-      // Use buildMember12LevelReport (SAME engine as Summary Report / MyReportSection)
-      // This ensures Self Business, Direct Business, Total Commission, etc. match exactly.
-      const report = userMetricsMap[m.uid] || buildMember12LevelReport(m, users);
-      // FIX: Take the MAX of all business sources so a stale lower field (e.g. packageTier=500)
-      // never overrides the correct higher value (e.g. selfBusiness=5100 for UCWF-2026-0835).
+      const report = userMetricsMap[m.uid] || buildMember12LevelReport(m, users, levelRates);
       const pkg = Math.max(
         report.selfBusiness || 0,
-        parseAmount(m),
-        Number(m.selfBusiness || 0),
-        Number(m.packageAmount || 0),
-        Number(m.packageTier || 0)
+        parseAmount(m)
       ) || 500;
       const sponsor = findParentMember(m, users);
       const sponsorIdResolved = sponsor?.memberId || m.sponsorId || 'DIRECT';
@@ -178,10 +161,8 @@ export default function DailyReportSection({
       const fullNameDisplay = getMemberFullName(m);
       const directBiz = Number(report.directBusiness || 0);
 
-      // Commission = total earned by this member from their 12-level downline tree
-      // (EXACT same as Summary Report / MyReportSection)
       const commGenerated = Number(report.totalCommission || 0);
-      const commPaid = Number(m.commissionPaid || 0);
+      const commPaid = Number(report.paidPayout || m.commissionPaid || 0);
       const commUnpaid = Math.max(0, commGenerated - commPaid);
 
       let payoutStatus = 'Unpaid';
@@ -217,9 +198,7 @@ export default function DailyReportSection({
   // Filtered members by active date mode and search query
   const filteredDayMembers = useMemo(() => {
     const todayStr = getISTDateString();
-    const yestDate = new Date();
-    yestDate.setDate(yestDate.getDate() - 1);
-    const yesterdayStr = getISTDateString(yestDate);
+    const yesterdayStr = epochMsToISTDateString(Date.now() - 86400000);
 
     let list = allDayMembersList;
 
@@ -246,8 +225,8 @@ export default function DailyReportSection({
     }
 
     return list.sort((a, b) => {
-      const timeA = new Date(a.createdAt || a.applicationDate || a.timestamp || 0).getTime();
-      const timeB = new Date(b.createdAt || b.applicationDate || b.timestamp || 0).getTime();
+      const timeA = parseAnyDateToEpochMs(a.timestamp || a.createdAt || a.applicationDate || a.joiningDate);
+      const timeB = parseAnyDateToEpochMs(b.timestamp || b.createdAt || b.applicationDate || b.joiningDate);
       return timeB - timeA;
     });
   }, [allDayMembersList, filterMode, specificDate, rangeStart, rangeEnd, searchQuery]);

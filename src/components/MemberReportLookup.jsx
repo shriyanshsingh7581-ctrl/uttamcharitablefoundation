@@ -332,7 +332,7 @@ export default function MemberReportLookup({
         m.sponsorNameResolved || '',
         m.packageAmount || 500,
         m.directTeamCount || 0,
-        m.directBusinessCalculated || 500,
+        m.directBusinessCalculated ?? 0,
         m.commissionGenerated || 0
       ]);
     });
@@ -814,15 +814,11 @@ export default function MemberReportLookup({
           {/* COMMISSION PAID & UNPAID TRACKING STATUS CARDS (Requirement 2) */}
           {(() => {
             const totalComm = Number(reportMetrics.totalCommission || 0);
-            const commPaid = Number(selectedMember.commissionPaid || 0);
-            const commUnpaid = Number(
-              selectedMember.commissionUnpaid !== undefined 
-                ? selectedMember.commissionUnpaid 
-                : Math.max(0, totalComm - commPaid)
-            );
-            const commStatus = selectedMember.commissionStatus || (
-              commUnpaid <= 0 && totalComm > 0 ? 'Paid' : (commPaid > 0 ? 'Partial' : 'Unpaid')
-            );
+            const commPaid = Number(reportMetrics.paidPayout ?? selectedMember.commissionPaid ?? 0);
+            const commUnpaid = Math.max(0, Number((totalComm - commPaid).toFixed(2)));
+            const commStatus = (commUnpaid <= 0 && commPaid > 0 && totalComm > 0)
+              ? 'Paid'
+              : (commPaid > 0 ? 'Partial' : 'Unpaid');
 
             return (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">

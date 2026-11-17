@@ -66,16 +66,72 @@ export function lastDigits(s) {
 }
 
 /**
+ * Round to 2 decimal places cleanly (preserves .5 rates like 2.5% and 1.5% without floating-point drift)
+ */
+export function round2(val) {
+  const n = Number(val || 0);
+  if (isNaN(n)) return 0;
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Normalize and validate 12-level commission rates.
+ * Enforces canonical 50% structure (20, 8, 5, 4, 3, 2.5, 2, 1.5, 1, 1, 1, 1)
+ * and rejects legacy/corrupted RTDB rate maps (e.g. old L2=10, L3=8).
+ */
+export function normalizeLevelRates(customRates = null) {
+  if (!customRates || typeof customRates !== 'object') {
+    return { ...DEFAULT_LEVEL_RATES };
+  }
+
+  const normalized = { ...DEFAULT_LEVEL_RATES };
+  if (Array.isArray(customRates)) {
+    // Handle 0-indexed 12-item array vs 1-indexed 13-item Firebase array [null, 20, 8, ...]
+    const isOneIndexed = customRates.length >= 13 && (customRates[0] === null || customRates[0] === undefined);
+    for (let lvl = 1; lvl <= 12; lvl++) {
+      const raw = isOneIndexed ? customRates[lvl] : customRates[lvl - 1];
+      const num = Number(raw);
+      if (!isNaN(num) && num >= 0 && num <= 100) {
+        normalized[lvl] = num;
+      }
+    }
+  } else {
+    for (let lvl = 1; lvl <= 12; lvl++) {
+      const raw = customRates[lvl] ?? customRates[String(lvl)];
+      if (raw !== undefined && raw !== null && raw !== '') {
+        const num = Number(raw);
+        if (!isNaN(num) && num >= 0 && num <= 100) {
+          normalized[lvl] = num;
+        }
+      }
+    }
+  }
+
+  // Detect stale legacy test structure (where L2 was 10 and L3 was 8) and heal to canonical 50% structure
+  if (normalized[1] === 20 && normalized[2] === 10 && normalized[3] === 8) {
+    return { ...DEFAULT_LEVEL_RATES };
+  }
+
+  return normalized;
+}
+
+/**
  * Bulletproof Number Parser
  * Inspects packageTier, amount, selfBusiness, donationAmount, packageAmount, business.
- * CRITICAL FIX: When passed a user object, takes the MAX across all amount fields so a stale
+ * CRITICAL FIX: Strips "Rs." before regex digit extraction so "Rs. 2,100" never becomes ".2100" (0.21).
+ * When passed a user object, takes the MAX across all personal amount fields so a stale
  * lower value (e.g. packageTier=500 when selfBusiness=5100) never wins.
- * Strips all ₹, Rs, commas, spaces and returns a clean positive Number (never NaN or ₹0).
  */
 function _parseSingleAmount(raw) {
-  if (raw === null || raw === undefined) return 0;
+  if (raw === null || raw === undefined || raw === '') return 0;
   if (typeof raw === 'number') return isNaN(raw) ? 0 : Math.max(0, raw);
-  const cleanStr = String(raw).replace(/[^0-9.]/g, '');
+  const cleanStr = String(raw)
+    .replace(/Rs\.?/gi, '')
+    .replace(/INR/gi, '')
+    .replace(/रुपये/g, '')
+    .replace(/[^0-9.]/g, '')
+    .replace(/^\.+|\.+$/g, '');
+  if (!cleanStr) return 0;
   const parsed = parseFloat(cleanStr);
   return isNaN(parsed) ? 0 : Math.max(0, parsed);
 }
@@ -88,11 +144,9 @@ export function parseAmount(valOrUser) {
     return _parseSingleAmount(valOrUser);
   }
 
-  // For user objects: take the MAXIMUM across all amount-carrying fields.
-  // This guarantees a stale low field (e.g. packageTier=500) never hides the
-  // correct higher value (e.g. selfBusiness=5100 for UCWF-2026-0835).
+  // For user objects: take the MAXIMUM across all personal package/donation amount fields.
   const candidates = [
-    valOrUser.selfBusiness,    // ← highest priority: explicitly synced field
+    valOrUser.selfBusiness,
     valOrUser.packageTier,
     valOrUser.amount,
     valOrUser.donationAmount,
@@ -101,7 +155,10 @@ export function parseAmount(valOrUser) {
   ].map(_parseSingleAmount);
 
   const maxVal = Math.max(...candidates, 0);
-  return maxVal;
+  if (maxVal > 0) return maxVal;
+
+  // Fallback to totalBusiness only if all primary fields are 0
+  return _parseSingleAmount(valOrUser.totalBusiness);
 }
 
 /**
@@ -271,20 +328,131 @@ export function normalizeSponsorId(childUser, allUsers = {}) {
 }
 
 /**
+ * Universal Date/Timestamp Parser (Handles ISO, DD/MM/YYYY, DD-MM-YYYY, "16 Nov 2026", epoch ms/sec)
+ * Never returns NaN; returns 0 if unparseable.
+ */
+export function parseAnyDateToEpochMs(raw) {
+  if (!raw) return 0;
+  if (typeof raw === 'number') {
+    if (isNaN(raw) || raw <= 0) return 0;
+    return raw < 1e11 ? raw * 1000 : raw;
+  }
+  if (raw instanceof Date) {
+    const t = raw.getTime();
+    return isNaN(t) ? 0 : t;
+  }
+  if (typeof raw === 'object' && raw.seconds) {
+    return Number(raw.seconds) * 1000;
+  }
+
+  const str = String(raw).trim();
+  if (!str) return 0;
+
+  // 1. Check numeric string
+  if (/^\d{10,13}$/.test(str)) {
+    const n = Number(str);
+    return str.length === 10 ? n * 1000 : n;
+  }
+
+  // 2. Check DD/MM/YYYY or DD-MM-YYYY (with optional time suffix e.g. "17/10/2026" or "16/11/2026, 07:30 pm")
+  const dmyMatch = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:[,\s]+(.*))?$/);
+  if (dmyMatch) {
+    const day = Number(dmyMatch[1]);
+    const month = Number(dmyMatch[2]);
+    const year = Number(dmyMatch[3]);
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 1970 && year <= 2100) {
+      const isoDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      // Interpret as IST noon if no time part to avoid UTC date boundary shift
+      const parsed = new Date(`${isoDate}T12:00:00+05:30`);
+      if (!isNaN(parsed.getTime())) return parsed.getTime();
+    }
+  }
+
+  // 3. Check YYYY-MM-DD (date only)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    const parsed = new Date(`${str}T12:00:00+05:30`);
+    if (!isNaN(parsed.getTime())) return parsed.getTime();
+  }
+
+  // 4. Standard Date parse (ISO, "16 Nov 2026, 07:30 pm", etc.)
+  const direct = new Date(str);
+  if (!isNaN(direct.getTime())) {
+    return direct.getTime();
+  }
+
+  return 0;
+}
+
+/**
+ * Convert any Date or epoch ms to YYYY-MM-DD in IST (Asia/Kolkata, UTC+5:30)
+ */
+export function epochMsToISTDateString(ms = Date.now()) {
+  const validMs = ms && !isNaN(ms) && ms > 0 ? Number(ms) : Date.now();
+  // Exact IST = UTC + 5 hours 30 minutes (+19800000 ms)
+  const istTime = new Date(validMs + 19800000);
+  const yyyy = istTime.getUTCFullYear();
+  const mm = String(istTime.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(istTime.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * Extract canonical YYYY-MM-DD (IST) from any member object
+ */
+export function extractMemberJoinDateIST(member) {
+  if (!member || typeof member !== 'object') return '';
+  const candidates = [
+    member.joiningDate,
+    member.applicationDate,
+    member.createdAt,
+    member.timestamp,
+    member.date
+  ];
+  for (const raw of candidates) {
+    if (!raw) continue;
+    if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw.trim())) {
+      return raw.trim().slice(0, 10);
+    }
+    const ms = parseAnyDateToEpochMs(raw);
+    if (ms > 0) {
+      return epochMsToISTDateString(ms);
+    }
+  }
+  return '';
+}
+
+/**
+ * Format member joining date as DD/MM/YYYY for UI tables & reports (never returns Invalid Date)
+ */
+export function formatMemberJoiningDate(member, fallback = '-') {
+  if (!member) return fallback;
+  const istDate = typeof member === 'object' ? extractMemberJoinDateIST(member) : epochMsToISTDateString(parseAnyDateToEpochMs(member));
+  if (istDate && /^\d{4}-\d{2}-\d{2}$/.test(istDate)) {
+    const [yyyy, mm, dd] = istDate.split('-');
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  return fallback;
+}
+
+/**
  * FOOLPROOF 12-LEVEL (50%) COMMISSION ENGINE
  * BFS Traversal from targetUser (Level 0) down to Depth 12 (Level 1 through Level 12)
  * Guarantees exact rupee calculation on eligible business, with zero self-commission.
  */
-export function buildMember12LevelReport(targetUser, allUsersMap = {}) {
+export function buildMember12LevelReport(targetUser, allUsersMap = {}, customRates = null) {
   const allList = Object.values(allUsersMap || {}).filter(Boolean);
+  const rates = normalizeLevelRates(customRates);
+  const totalRatePool = round2(
+    Object.values(rates).reduce((acc, r) => acc + Number(r || 0), 0)
+  );
 
   const emptyBreakdown = Array.from({ length: 12 }, (_, i) => ({
     level: i + 1,
-    rate: DEFAULT_LEVEL_RATES[i + 1],
+    rate: rates[i + 1],
     count: 0,
     business: 0,
     commission: 0,
-    poolSharePct: 50,
+    poolSharePct: totalRatePool,
     members: []
   }));
 
@@ -312,7 +480,7 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}) {
 
   if (!targetUser) return emptyResult;
 
-  const selfBiz = parseAmount(targetUser);
+  const selfBiz = round2(parseAmount(targetUser));
   const selfComm = 0; // STRICTLY 0% SELF COMMISSION
 
   const visitedUids = new Set();
@@ -334,7 +502,7 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}) {
   let downlineCommission = 0;
 
   for (let lvl = 1; lvl <= 12; lvl++) {
-    const rate = DEFAULT_LEVEL_RATES[lvl] || 0;
+    const rate = Number(rates[lvl] ?? DEFAULT_LEVEL_RATES[lvl] ?? 0);
     const lvlMembers = [];
     let lvlBiz = 0;
     let lvlComm = 0;
@@ -350,12 +518,12 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}) {
           if (uUid) visitedUids.add(uUid);
           if (uMemId) visitedUids.add(uMemId);
 
-          const pkg = parseAmount(u);
-          const comm = (pkg * rate) / 100;
+          const pkg = round2(parseAmount(u));
+          const comm = round2((pkg * rate) / 100);
 
           // Direct referrals count of this child
           const childDirects = allList.filter(gc => isDirectChild(gc, u));
-          const childDirectBiz = childDirects.reduce((acc, gc) => acc + parseAmount(gc), 0);
+          const childDirectBiz = round2(childDirects.reduce((acc, gc) => acc + parseAmount(gc), 0));
 
           const enhanced = {
             ...u,
@@ -373,8 +541,8 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}) {
 
           lvlMembers.push(enhanced);
           fullDownlineList.push(enhanced);
-          lvlBiz += pkg;
-          lvlComm += comm;
+          lvlBiz = round2(lvlBiz + pkg);
+          lvlComm = round2(lvlComm + comm);
         }
       });
     }
@@ -385,7 +553,7 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}) {
       count: lvlMembers.length,
       business: lvlBiz,
       commission: lvlComm,
-      poolSharePct: 50,
+      poolSharePct: totalRatePool,
       members: lvlMembers
     });
 
@@ -395,20 +563,27 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}) {
       directCommission = lvlComm;
     } else {
       downlineMembersCount += lvlMembers.length;
-      downlineBusiness += lvlBiz;
-      downlineCommission += lvlComm;
+      downlineBusiness = round2(downlineBusiness + lvlBiz);
+      downlineCommission = round2(downlineCommission + lvlComm);
     }
 
     currentParents = lvlMembers;
   }
 
   const totalTeamMembers = directMembersCount + downlineMembersCount;
-  const totalTeamBusiness = directBusiness + downlineBusiness;
-  const totalCommission = directCommission + downlineCommission; // Strictly zero self comm
-  const totalDistributedChain = totalTeamBusiness * 0.50; // 50% pool distributed across entire chain
+  const totalTeamBusiness = round2(directBusiness + downlineBusiness);
+  const totalCommission = round2(directCommission + downlineCommission); // Strictly zero self comm
+  const totalDistributedChain = round2((totalTeamBusiness * totalRatePool) / 100);
 
-  const paidPayout = Number(targetUser.commissionPaid || targetUser.paidPayout || targetUser.totalWithdrawn || 0);
-  const unpaidPayout = Math.max(0, totalCommission - paidPayout);
+  const paidPayout = round2(
+    Math.max(
+      Number(targetUser.commissionPaid || 0),
+      Number(targetUser.paidPayout || 0),
+      Number(targetUser.totalWithdrawn || 0),
+      0
+    )
+  );
+  const unpaidPayout = round2(Math.max(0, totalCommission - paidPayout));
 
   return {
     user: targetUser,
@@ -437,7 +612,7 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}) {
  * Backward-compatible wrapper for existing callers
  */
 export function computeUnlimitedGenerationTree(rootUser, allUsersMap = {}, customLevelRates = null) {
-  return buildMember12LevelReport(rootUser, allUsersMap);
+  return buildMember12LevelReport(rootUser, allUsersMap, customLevelRates);
 }
 
 /**
@@ -446,6 +621,7 @@ export function computeUnlimitedGenerationTree(rootUser, allUsersMap = {}, custo
 export function getUplineChainFromMap(memberOrId, allUsersMap = {}, customRates = null) {
   if (!memberOrId || !allUsersMap) return [];
   const allList = Object.values(allUsersMap).filter(Boolean);
+  const rates = normalizeLevelRates(customRates);
 
   let current = null;
   if (typeof memberOrId === 'object') {
@@ -480,7 +656,7 @@ export function getUplineChainFromMap(memberOrId, allUsersMap = {}, customRates 
     if (parentUid) visited.add(parentUid);
     if (parentMemId) visited.add(parentMemId);
 
-    const rate = Number(customRates?.[lvl] ?? DEFAULT_LEVEL_RATES[lvl]);
+    const rate = Number(rates[lvl] ?? DEFAULT_LEVEL_RATES[lvl]);
     chain.push({
       level: lvl,
       rate,
@@ -489,8 +665,8 @@ export function getUplineChainFromMap(memberOrId, allUsersMap = {}, customRates 
       memberId: parent.memberId || 'N/A',
       name: getMemberFullName(parent),
       phone: parent.phone || '',
-      walletBalance: Number(parent.walletBalance || 0),
-      totalEarned: Number(parent.totalEarned || 0)
+      walletBalance: round2(parent.walletBalance || 0),
+      totalEarned: round2(parent.totalEarned || 0)
     });
 
     activeChild = parent;
@@ -503,13 +679,13 @@ export function getUplineChainFromMap(memberOrId, allUsersMap = {}, customRates 
  * Calculate total commission generated and trust share for a new joined member
  */
 export function calculateJoinCommission(joinedMember, allUsersMap = {}, customRates = null) {
-  const pkg = parseAmount(joinedMember);
+  const pkg = round2(parseAmount(joinedMember));
   const chain = getUplineChainFromMap(joinedMember, allUsersMap, customRates);
 
   let commissionSum = 0;
   const distributions = chain.map(node => {
-    const amt = (pkg * node.rate) / 100;
-    commissionSum += amt;
+    const amt = round2((pkg * node.rate) / 100);
+    commissionSum = round2(commissionSum + amt);
     return {
       level: node.level,
       rate: node.rate,
@@ -520,7 +696,7 @@ export function calculateJoinCommission(joinedMember, allUsersMap = {}, customRa
     };
   });
 
-  const netTrustShare = Math.max(0, pkg - commissionSum);
+  const netTrustShare = round2(Math.max(0, pkg - commissionSum));
 
   return {
     packageAmount: pkg,
@@ -533,9 +709,15 @@ export function calculateJoinCommission(joinedMember, allUsersMap = {}, customRa
 export default {
   DEFAULT_LEVEL_RATES,
   CANONICAL_LEVEL_RATES,
+  round2,
+  normalizeLevelRates,
   normId,
   lastDigits,
   parseAmount,
+  parseAnyDateToEpochMs,
+  epochMsToISTDateString,
+  extractMemberJoinDateIST,
+  formatMemberJoiningDate,
   isDirectChild,
   isSponsoredBy,
   getMemberFullName,

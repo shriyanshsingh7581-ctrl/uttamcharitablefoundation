@@ -99,6 +99,11 @@ import {
   calculateJoinCommission,
   buildMember12LevelReport,
   parseAmount,
+  round2,
+  normalizeLevelRates,
+  extractMemberJoinDateIST,
+  formatMemberJoiningDate,
+  parseAnyDateToEpochMs,
   DEFAULT_LEVEL_RATES
 } from '../utils/mlmUtils';
 import PaperRegistrationForm from '../components/PaperRegistrationForm';
@@ -232,28 +237,7 @@ export default function AdminPanel() {
   const [memberSortOrder, setMemberSortOrder] = useState('date-desc'); // 'date-desc' | 'date-asc' | 'name-asc' | 'business-desc' | 'commission-desc'
 
   // Helper to format joining date as DD/MM/YYYY
-  const formatJoiningDate = (m) => {
-    if (!m) return '—';
-    const raw = m.joiningDate || m.applicationDate || m.createdAt || m.timestamp || m.date;
-    if (!raw) return '17/10/2026';
-    try {
-      const d = new Date(raw);
-      if (!isNaN(d.getTime())) {
-        const dd = String(d.getDate()).padStart(2, '0');
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const yyyy = d.getFullYear();
-        return `${dd}/${mm}/${yyyy}`;
-      }
-    } catch (_) {}
-    if (typeof raw === 'string' && raw.includes('-')) {
-      const parts = raw.split('T')[0].split('-');
-      if (parts.length === 3) {
-        if (parts[0].length === 4) return `${parts[2]}/${parts[1]}/${parts[0]}`;
-        return `${parts[0]}/${parts[1]}/${parts[2]}`;
-      }
-    }
-    return String(raw);
-  };
+  const formatJoiningDate = (m) => formatMemberJoiningDate(m);
 
   const handleOpenEditMember = (member) => {
     setEditingMember(member);
@@ -408,13 +392,13 @@ export default function AdminPanel() {
       `Enter Commission Paid amount (₹) for ${member.name} (${member.memberId || 'N/A'}):\nTotal Commission Earned: ₹${totalComm}`,
       currentPaid,
       async (input) => {
-        const num = Number(String(input || '').replace(/[^\d.]/g, ''));
+        const num = parseAmount(input);
         if (isNaN(num) || num < 0) {
           showToast('Invalid amount entered.', 'error');
           return;
         }
-        const newPaid = num;
-        const newUnpaid = Math.max(0, totalComm - newPaid);
+        const newPaid = round2(num);
+        const newUnpaid = Math.max(0, round2(totalComm - newPaid));
         const newStatus = newUnpaid === 0 && newPaid > 0 ? 'Paid' : (newPaid > 0 ? 'Partial' : 'Unpaid');
 
         try {
@@ -590,16 +574,14 @@ export default function AdminPanel() {
     const ratesRef = ref(rtdb, 'settings/levelRates');
     unsubList.push(onValue(ratesRef, (snap) => {
       if (snap.exists()) {
-        setLevelRates(snap.val());
+        setLevelRates(normalizeLevelRates(snap.val()));
       }
     }, onRtdbErr('levelRates')));
 
-    // Self Business Rate listener
+    // Self Business Rate listener (Strictly 0% self commission)
     const selfRateRef = ref(rtdb, 'settings/selfBusinessRate');
-    unsubList.push(onValue(selfRateRef, (snap) => {
-      if (snap.exists()) {
-        setSelfBusinessRate(Number(snap.val()));
-      }
+    unsubList.push(onValue(selfRateRef, () => {
+      setSelfBusinessRate(0);
     }, onRtdbErr('selfBusinessRate')));
 
     // Daily Closings listener
@@ -637,17 +619,17 @@ export default function AdminPanel() {
     if (commissionFilter === 'PAID') {
       list = list.filter(m => {
         const met = memberTreeMetricsMap[m.uid] || {};
-        const totalComm = Number(met.totalCommission || m.totalCommission || 0);
-        const paid = Number(m.commissionPaid || 0);
-        const unpaid = Number(m.commissionUnpaid !== undefined ? m.commissionUnpaid : Math.max(0, totalComm - paid));
+        const totalComm = Number(met.totalCommission ?? m.totalCommission ?? 0);
+        const paid = Number(m.commissionPaid || m.totalWithdrawn || 0);
+        const unpaid = Math.max(0, round2(totalComm - paid));
         return (m.commissionStatus === 'Paid' || (unpaid <= 0 && paid > 0 && totalComm > 0));
       });
     } else if (commissionFilter === 'UNPAID') {
       list = list.filter(m => {
         const met = memberTreeMetricsMap[m.uid] || {};
-        const totalComm = Number(met.totalCommission || m.totalCommission || 0);
-        const paid = Number(m.commissionPaid || 0);
-        const unpaid = Number(m.commissionUnpaid !== undefined ? m.commissionUnpaid : Math.max(0, totalComm - paid));
+        const totalComm = Number(met.totalCommission ?? m.totalCommission ?? 0);
+        const paid = Number(m.commissionPaid || m.totalWithdrawn || 0);
+        const unpaid = Math.max(0, round2(totalComm - paid));
         return unpaid > 0;
       });
     }
@@ -668,11 +650,7 @@ export default function AdminPanel() {
       const getTime = (x) => {
         if (x.timestamp && typeof x.timestamp === 'number') return x.timestamp;
         const dStr = x.joiningDate || x.applicationDate || x.createdAt || x.date;
-        if (dStr) {
-          const t = new Date(dStr).getTime();
-          if (!isNaN(t)) return t;
-        }
-        return 0;
+        return parseAnyDateToEpochMs(dStr);
       };
 
       if (memberSortOrder === 'date-asc') {
@@ -808,9 +786,9 @@ export default function AdminPanel() {
     // Also calculate global counts across all users
     Object.entries(users).forEach(([uid, u]) => {
       const met = memberTreeMetricsMap[uid] || { totalCommission: Number(u.totalCommission || 0) };
-      const comm = Number(met.totalCommission || 0);
-      const paid = Number(u.commissionPaid || 0);
-      const unpaid = Number(u.commissionUnpaid !== undefined ? u.commissionUnpaid : Math.max(0, comm - paid));
+      const comm = Number(met.totalCommission ?? 0);
+      const paid = Number(u.commissionPaid || u.totalWithdrawn || 0);
+      const unpaid = Math.max(0, round2(comm - paid));
       if (u.commissionStatus === 'Paid' || (unpaid <= 0 && paid > 0 && comm > 0)) {
         paidCount++;
       } else if (unpaid > 0) {
@@ -820,20 +798,20 @@ export default function AdminPanel() {
 
     sortedMembers.forEach((m) => {
       const met = memberTreeMetricsMap[m.uid] || {
-        selfBusiness: Number(m.packageAmount || m.packageTier || 0),
+        selfBusiness: parseAmount(m),
         directBusiness: 0,
         downlineBusiness: 0,
         totalCommission: Number(m.totalCommission || 0)
       };
-      selfBiz += met.selfBusiness;
-      directBiz += met.directBusiness;
-      downBiz += met.downlineBusiness;
-      totalComm += met.totalCommission;
+      selfBiz = round2(selfBiz + met.selfBusiness);
+      directBiz = round2(directBiz + met.directBusiness);
+      downBiz = round2(downBiz + met.downlineBusiness);
+      totalComm = round2(totalComm + met.totalCommission);
 
-      const mPaid = Number(m.commissionPaid || 0);
-      const mUnpaid = Number(m.commissionUnpaid !== undefined ? m.commissionUnpaid : Math.max(0, met.totalCommission - mPaid));
-      totalPaid += mPaid;
-      totalUnpaid += mUnpaid;
+      const mPaid = Number(m.commissionPaid || m.totalWithdrawn || 0);
+      const mUnpaid = Math.max(0, round2(met.totalCommission - mPaid));
+      totalPaid = round2(totalPaid + mPaid);
+      totalUnpaid = round2(totalUnpaid + mUnpaid);
     });
 
     return {
@@ -854,21 +832,7 @@ export default function AdminPanel() {
   const totalCompanyCommissionUnpaid = memberTotals.totalCommissionUnpaid;
 
   // Helper to extract YYYY-MM-DD (IST) from any member join timestamp
-  const extractJoinDateIST = (m) => {
-    if (!m) return '';
-    const raw = m.createdAt || m.applicationDate || m.timestamp;
-    if (!raw) return '';
-    if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw)) {
-      return raw.slice(0, 10);
-    }
-    try {
-      const d = new Date(raw);
-      if (!isNaN(d.getTime())) {
-        return getISTDateString(d);
-      }
-    } catch {}
-    return '';
-  };
+  const extractJoinDateIST = (m) => extractMemberJoinDateIST(m) || getISTDateString();
 
   // Day-by-Day Joining Members List (Requirement 4)
   const dayByDayMembersList = useMemo(() => {
@@ -1127,15 +1091,16 @@ export default function AdminPanel() {
 
   const workerDownlineResult = useMemo(() => {
     if (!selectedWorker) return { rows: [], totalMembers: 0, totalBiz: 0, totalComm: 0 };
-    const report = buildMember12LevelReport(selectedWorker, users);
+    const normalizedRates = normalizeLevelRates(levelRates);
+    const report = buildMember12LevelReport(selectedWorker, users, normalizedRates);
     let totalBiz = 0;
     let totalComm = 0;
     const rows = (report.fullDownlineList || []).map((m) => {
-      const rate = Number(levelRates?.[m.level] ?? DEFAULT_LEVEL_RATES[m.level] ?? m.rate ?? 1);
+      const rate = Number(normalizedRates[m.level] ?? DEFAULT_LEVEL_RATES[m.level] ?? m.rate ?? 1);
       const pkg = parseAmount(m);
-      const comm = Math.round((pkg * rate) / 100);
-      totalBiz += pkg;
-      totalComm += comm;
+      const comm = round2((pkg * rate) / 100);
+      totalBiz = round2(totalBiz + pkg);
+      totalComm = round2(totalComm + comm);
       return {
         level: m.level,
         rate,
@@ -1214,31 +1179,30 @@ export default function AdminPanel() {
   // Member-wise Commission & Payout Master Ledger Calculation
   const membersLedger = useMemo(() => {
     let list = Object.entries(users).map(([uid, u]) => {
-      const pkg = Number(u.packageAmount || 0);
-      const wallet = Number(u.walletBalance || 0);
-      const selfBiz = Number(u.selfBusiness || pkg);
-      const sRate = 0; // ZERO SELF COMMISSION ALWAYS
-      const selfComm = 0;
-      const directComm = Number(u.directCommission || u.directTeamCommission || 0);
-      const downlineComm = Number(u.downlineCommission || 0);
-      const totalComm = Number(u.totalCommission || (directComm + downlineComm) || u.totalEarned || 0);
-      const totalPaid = Number(u.totalWithdrawn || 0);
-      const directBiz = Number(u.directBusiness || u.directTeamBusiness || 0);
-      const downlineBiz = Number(u.downlineBusiness || 0);
-      const teamBiz = Number(u.teamBusiness || (directBiz + downlineBiz) || 0);
+      const met = memberTreeMetricsMap[uid] || {};
+      const pkg = Number(met.selfBusiness ?? parseAmount(u));
+      const selfComm = 0; // ZERO SELF COMMISSION ALWAYS
+      const directComm = Number(met.directCommission ?? u.directCommission ?? u.directTeamCommission ?? 0);
+      const downlineComm = Number(met.downlineCommission ?? u.downlineCommission ?? 0);
+      const totalComm = Number(met.totalCommission ?? u.totalCommission ?? (directComm + downlineComm) ?? u.totalEarned ?? 0);
+      const totalPaid = Number(u.commissionPaid || u.totalWithdrawn || 0);
+      const netPayable = Math.max(0, round2(totalComm - totalPaid));
+      const directBiz = Number(met.directBusiness ?? u.directBusiness ?? u.directTeamBusiness ?? 0);
+      const downlineBiz = Number(met.downlineBusiness ?? u.downlineBusiness ?? 0);
+      const teamBiz = round2(directBiz + downlineBiz);
 
       return {
         uid,
         ...u,
         packageAmount: pkg,
-        walletBalance: wallet,
-        selfBusiness: selfBiz,
+        walletBalance: netPayable,
+        selfBusiness: pkg,
         selfBusinessCommission: selfComm,
         directCommission: directComm,
         downlineCommission: downlineComm,
         totalCommission: totalComm,
         totalWithdrawn: totalPaid,
-        netPayable: wallet,
+        netPayable,
         directBusiness: directBiz,
         downlineBusiness: downlineBiz,
         teamBusiness: teamBiz
@@ -1262,7 +1226,7 @@ export default function AdminPanel() {
     }
 
     return list.sort((a, b) => (b.netPayable - a.netPayable) || (b.totalCommission - a.totalCommission));
-  }, [users, selfBusinessRate, ledgerFilter, ledgerSearch]);
+  }, [users, memberTreeMetricsMap, ledgerFilter, ledgerSearch]);
 
   const ledgerTotals = useMemo(() => {
     let totalComm = 0;
@@ -1270,26 +1234,26 @@ export default function AdminPanel() {
     let totalPayable = 0;
     let totalTeamBiz = 0;
 
-    Object.values(users).forEach(u => {
-      const pkg = Number(u.packageAmount || 0);
-      const wallet = Number(u.walletBalance || 0);
-      const selfBiz = Number(u.selfBusiness || pkg);
-      const sRate = 0;
-      const selfComm = 0;
-      const directComm = Number(u.directCommission || u.directTeamCommission || 0);
-      const downlineComm = Number(u.downlineCommission || 0);
-      const memberTotalComm = Number(u.totalCommission || (selfComm + directComm + downlineComm) || u.totalEarned || 0);
-      const memberPaid = Number(u.totalWithdrawn || 0);
-      const teamBiz = Number(u.teamBusiness || (Number(u.directBusiness || 0) + Number(u.downlineBusiness || 0)) || 0);
+    Object.entries(users).forEach(([uid, u]) => {
+      if (!u) return;
+      const met = memberTreeMetricsMap[uid] || {};
+      const directComm = Number(met.directCommission ?? u.directCommission ?? u.directTeamCommission ?? 0);
+      const downlineComm = Number(met.downlineCommission ?? u.downlineCommission ?? 0);
+      const memberTotalComm = Number(met.totalCommission ?? u.totalCommission ?? (directComm + downlineComm) ?? u.totalEarned ?? 0);
+      const memberPaid = Number(u.commissionPaid || u.totalWithdrawn || 0);
+      const memberPayable = Math.max(0, round2(memberTotalComm - memberPaid));
+      const directBiz = Number(met.directBusiness ?? u.directBusiness ?? 0);
+      const downlineBiz = Number(met.downlineBusiness ?? u.downlineBusiness ?? 0);
+      const teamBiz = round2(directBiz + downlineBiz);
 
-      totalComm += memberTotalComm;
-      totalPaid += memberPaid;
-      totalPayable += wallet;
-      totalTeamBiz += teamBiz;
+      totalComm = round2(totalComm + memberTotalComm);
+      totalPaid = round2(totalPaid + memberPaid);
+      totalPayable = round2(totalPayable + memberPayable);
+      totalTeamBiz = round2(totalTeamBiz + teamBiz);
     });
 
     return { totalComm, totalPaid, totalPayable, totalTeamBiz };
-  }, [users, selfBusinessRate]);
+  }, [users, memberTreeMetricsMap]);
 
   // Instant Cash Payout to a Member from Commission Ledger
   const handlePayMemberInstantCash = (member) => {
@@ -1304,12 +1268,15 @@ export default function AdminPanel() {
     openConfirmDialog('Confirm Cash Payout?', confirmMsg, async () => {
       try {
         const updates = {};
-        const currentWithdrawn = Number(member.totalWithdrawn || 0);
+        const currentWithdrawn = Number(member.commissionPaid || member.totalWithdrawn || 0);
         const nowTimestamp = Date.now();
         const nowIso = new Date().toISOString();
 
         updates[`/users/${member.uid}/walletBalance`] = 0;
-        updates[`/users/${member.uid}/totalWithdrawn`] = currentWithdrawn + payAmt;
+        updates[`/users/${member.uid}/totalWithdrawn`] = round2(currentWithdrawn + payAmt);
+        updates[`/users/${member.uid}/commissionPaid`] = round2(currentWithdrawn + payAmt);
+        updates[`/users/${member.uid}/commissionUnpaid`] = 0;
+        updates[`/users/${member.uid}/commissionStatus`] = 'Paid';
 
         // Log transaction
         const newTxRef = push(ref(rtdb, 'transactions'));
@@ -1469,8 +1436,8 @@ export default function AdminPanel() {
       const rows = [];
       for (let lvl = 1; lvl <= 12; lvl++) {
         const upline = chainMap[lvl];
-        const defaultPct = Number(levelRates[lvl] ?? 0);
-        const defaultAmt = upline ? Math.round((pkgAmount * defaultPct) / 100) : 0;
+        const defaultPct = Number(levelRates[lvl] ?? DEFAULT_LEVEL_RATES[lvl] ?? 0);
+        const defaultAmt = upline ? round2((pkgAmount * defaultPct) / 100) : 0;
 
         rows.push({
           level: lvl,
@@ -1506,7 +1473,7 @@ export default function AdminPanel() {
 
         if (field === 'percentage') {
           const newPct = parseFloat(value) || 0;
-          const newAmt = Math.round((prev.amount * newPct) / 100);
+          const newAmt = round2((prev.amount * newPct) / 100);
           return { ...row, percentage: value, amount: newAmt };
         } else if (field === 'amount') {
           const newAmt = parseFloat(value) || 0;
@@ -2606,13 +2573,9 @@ export default function AdminPanel() {
                         totalCommission: Number(member.totalCommission || 0)
                       };
                       const cleanFullName = `${member.salutation || ''} ${member.name || ''}`.trim() || 'Member';
-                      const mComm = Number(met.totalCommission || member.totalCommission || 0);
-                      const mPaid = Number(member.commissionPaid || 0);
-                      const mUnpaid = Number(
-                        member.commissionUnpaid !== undefined
-                          ? member.commissionUnpaid
-                          : Math.max(0, mComm - mPaid)
-                      );
+                      const mComm = Number(met.totalCommission ?? member.totalCommission ?? 0);
+                      const mPaid = Number(member.commissionPaid || member.totalWithdrawn || 0);
+                      const mUnpaid = Math.max(0, round2(mComm - mPaid));
                       const isPaid = member.commissionStatus === 'Paid' || (mUnpaid <= 0 && mPaid > 0 && mComm > 0);
                       const mStatus = isPaid ? 'Paid' : (mPaid > 0 ? 'Partial' : 'Unpaid');
 
@@ -3227,15 +3190,11 @@ export default function AdminPanel() {
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
                       {sortedMembers.map((m, idx) => {
-                        const mBiz = Number(m.packageAmount || m.packageTier || 500);
                         const met = memberTreeMetricsMap[m.uid] || {};
-                        const mComm = Number(met.totalCommission || m.totalEarned || m.totalCommission || 0);
-                        const mPaid = Number(m.commissionPaid || 0);
-                        const mUnpaid = Number(
-                          m.commissionUnpaid !== undefined 
-                            ? m.commissionUnpaid 
-                            : Math.max(0, mComm - mPaid)
-                        );
+                        const mBiz = Number(met.selfBusiness ?? parseAmount(m));
+                        const mComm = Number(met.totalCommission ?? m.totalEarned ?? m.totalCommission ?? 0);
+                        const mPaid = Number(m.commissionPaid || m.totalWithdrawn || 0);
+                        const mUnpaid = Math.max(0, round2(mComm - mPaid));
                         const isPaid = m.commissionStatus === 'Paid' || (mUnpaid <= 0 && mPaid > 0 && mComm > 0);
                         const mStatus = isPaid ? 'Paid' : (mPaid > 0 ? 'Partial' : 'Unpaid');
                         const cleanFullName = `${m.salutation || ''} ${m.name || ''}`.trim() || 'Member';
@@ -3442,26 +3401,26 @@ export default function AdminPanel() {
         {activeTab === 'payouts' && (() => {
           const simPkg = Number(simPackageAmount || 2100);
           const simSelfRate = 0; // ZERO SELF COMMISSION
-          const simSelfAmt = Math.round((simPkg * simSelfRate) / 100);
+          const simSelfAmt = 0;
           
           const simLvlRates = Array.from({ length: 12 }, (_, i) => ({ 
             level: i + 1, 
-            rate: Number(levelRates[i + 1] ?? 0) 
+            rate: Number(levelRates[i + 1] ?? DEFAULT_LEVEL_RATES[i + 1] ?? 0) 
           }));
           const simLvlRows = simLvlRates.map(item => ({ 
             ...item, 
-            amount: Math.round((simPkg * item.rate) / 100) 
+            amount: round2((simPkg * item.rate) / 100) 
           }));
           
           const simDirectAmt = simLvlRows.find(r => r.level === 1)?.amount || 0;
           const simDirectRate = simLvlRows.find(r => r.level === 1)?.rate || 0;
           const simDownlineRows = simLvlRows.filter(r => r.level > 1);
-          const simDownlineAmt = simDownlineRows.reduce((acc, r) => acc + r.amount, 0);
-          const simDownlineRate = simDownlineRows.reduce((acc, r) => acc + r.rate, 0);
-          const simTotalDistributed = simDirectAmt + simDownlineAmt;
-          const simTotalDistributedRate = simDirectRate + simDownlineRate;
-          const simTrustShareAmt = Math.max(0, simPkg - simTotalDistributed);
-          const simTrustShareRate = Math.max(0, 100 - simTotalDistributedRate);
+          const simDownlineAmt = round2(simDownlineRows.reduce((acc, r) => acc + r.amount, 0));
+          const simDownlineRate = round2(simDownlineRows.reduce((acc, r) => acc + r.rate, 0));
+          const simTotalDistributed = round2(simDirectAmt + simDownlineAmt);
+          const simTotalDistributedRate = round2(simDirectRate + simDownlineRate);
+          const simTrustShareAmt = Math.max(0, round2(simPkg - simTotalDistributed));
+          const simTrustShareRate = Math.max(0, round2(100 - simTotalDistributedRate));
 
           return (
             <div className="space-y-6">
@@ -3782,7 +3741,7 @@ export default function AdminPanel() {
                               <div className="mt-1 text-[10px] text-slate-400 font-mono flex items-center justify-between">
                                 <span>₹{simPkg} पर:</span>
                                 <strong className={isDirect ? 'text-blue-300' : 'text-emerald-400'}>
-                                  ₹{Math.round((simPkg * Number(currentVal || 0)) / 100)}
+                                  {formatINR(round2((simPkg * Number(currentVal || 0)) / 100))}
                                 </strong>
                               </div>
                             </div>
@@ -4307,7 +4266,7 @@ export default function AdminPanel() {
                       </div>
                       <h4 className="text-xs font-black text-white">12-स्तरीय कमीशन गणना</h4>
                       <p className="text-[11px] text-slate-400">
-                        सिस्टम तुरंत 12-लेवल अपलाइन चेन ढूंढता है: डायरेक्ट स्पॉन्सर को L1 (20%), L2 को 10%, L3 को 8% ... L12 को 1% व ट्रस्ट शेयर विभाजित होता है।
+                        सिस्टम तुरंत 12-लेवल अपलाइन चेन ढूंढता है: डायरेक्ट स्पॉन्सर को L1 (20%), L2 (8%), L3 (5%), L4 (4%), L5 (3%), L6 (2.5%), L7 (2%), L8 (1.5%), व L9–L12 (1%) — कुल 50% व 50% ट्रस्ट शेयर विभाजित होता है।
                       </p>
                       <span className="inline-block px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 text-[10px] font-bold">
                         स्वचालित विभाजन

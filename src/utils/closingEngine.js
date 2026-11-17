@@ -1,362 +1,302 @@
-import { db, ref, get, set, update, remove, auth, signInWithEmailAndPassword } from '../lib/firebase';
-import { 
-  getSavedSelfBusinessRate, 
-  getSavedLevelRates, 
+import { rtdb } from '../lib/firebase';
+import { ref, get, update } from 'firebase/database';
+import {
+  DEFAULT_LEVEL_RATES,
+  round2,
+  normalizeLevelRates,
   buildMember12LevelReport,
-  calculateMemberTreeMetrics 
-} from './commission';
-import { DEFAULT_LEVEL_RATES } from './mlmUtils';
+  getMemberFullName,
+  parseAmount,
+  parseAnyDateToEpochMs,
+  epochMsToISTDateString,
+  extractMemberJoinDateIST,
+  formatMemberJoiningDate
+} from './mlmUtils';
+
+export {
+  parseAnyDateToEpochMs,
+  epochMsToISTDateString,
+  extractMemberJoinDateIST,
+  formatMemberJoiningDate
+};
 
 /**
- * Returns YYYY-MM-DD formatted string in Indian Standard Time (IST - Asia/Kolkata)
+ * Returns YYYY-MM-DD formatted date string in Indian Standard Time (IST, UTC+5:30).
+ * Uses exact epoch math (+19,800,000 ms) so it is 100% deterministic across all browsers/timezones.
  */
-export function getISTDateString(d = new Date()) {
-  try {
-    const options = { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' };
-    const formatter = new Intl.DateTimeFormat('en-CA', options); // en-CA produces YYYY-MM-DD
-    return formatter.format(d);
-  } catch {
-    const istOffset = 5.5 * 60 * 60 * 1000;
-    const istDate = new Date(d.getTime() + (d.getTimezoneOffset() * 60000) + istOffset);
-    const yyyy = istDate.getFullYear();
-    const mm = String(istDate.getMonth() + 1).padStart(2, '0');
-    const dd = String(istDate.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
+export function getISTDateString(dateInput = null) {
+  if (!dateInput) {
+    return epochMsToISTDateString(Date.now());
   }
+  if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput.trim())) {
+    return dateInput.trim();
+  }
+  const ms = parseAnyDateToEpochMs(dateInput);
+  return epochMsToISTDateString(ms > 0 ? ms : Date.now());
 }
 
 /**
- * Calculate exact time remaining until next 12:00:00 AM (Midnight IST)
+ * Calculates exact hours, minutes, seconds remaining until the next 12:00:00 AM (00:00 IST) midnight closing.
+ * Uses pure UTC+5:30 epoch arithmetic so it never drifts or fails on non-US browser locales.
  */
 export function getTimeUntilMidnightIST() {
-  const now = new Date();
-  const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-  const istDate = new Date(istString);
+  const nowUtcMs = Date.now();
+  // IST is strictly UTC + 5 hours 30 minutes (+19,800,000 ms)
+  const istEpochMs = nowUtcMs + 19800000;
+  const dayMs = 86400000; // 24 * 60 * 60 * 1000
+  const msIntoCurrentISTDay = ((istEpochMs % dayMs) + dayMs) % dayMs;
+  const diffMs = Math.max(0, dayMs - msIntoCurrentISTDay);
 
-  // Target next midnight (00:00:00)
-  const nextMidnight = new Date(istDate);
-  nextMidnight.setHours(24, 0, 0, 0);
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
 
-  const diffMs = Math.max(0, nextMidnight.getTime() - istDate.getTime());
-  const totalSec = Math.floor(diffMs / 1000);
-  const hours = Math.floor(totalSec / 3600);
-  const minutes = Math.floor((totalSec % 3600) / 60);
-  const seconds = totalSec % 60;
+  // Also compute current IST clock time for display if needed
+  const currentISTTotalSec = Math.floor(msIntoCurrentISTDay / 1000);
+  const curH24 = Math.floor(currentISTTotalSec / 3600);
+  const curM = Math.floor((currentISTTotalSec % 3600) / 60);
+  const curS = currentISTTotalSec % 60;
+  const ampm = curH24 >= 12 ? 'PM' : 'AM';
+  const curH12 = curH24 % 12 || 12;
 
   return {
+    hours,
+    minutes,
+    seconds,
     diffMs,
-    hours: String(hours).padStart(2, '0'),
-    minutes: String(minutes).padStart(2, '0'),
-    seconds: String(seconds).padStart(2, '0'),
-    formatted: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    closingTimeLabel: '12:00 AM IST',
+    currentISTDate: epochMsToISTDateString(nowUtcMs),
+    currentISTTimeFormatted: `${String(curH12).padStart(2, '0')}:${String(curM).padStart(2, '0')}:${String(curS).padStart(2, '0')} ${ampm} IST`,
+    formatted: `${String(hours).padStart(2, '0')}h : ${String(minutes).padStart(2, '0')}m : ${String(seconds).padStart(2, '0')}s`
   };
 }
 
 /**
- * Generate 12:00 AM Midnight Daily Closing Statement for all active members
- * Uses the exact buildMember12LevelReport traversal with locked 12-level rates (Total 50%).
- * @param {string|null} customDate - Optional YYYY-MM-DD, defaults to current IST date
+ * Core 12:00 AM Daily Closing Engine
+ * Uses the unified buildMember12LevelReport engine from mlmUtils.js so that:
+ * 1. Every member's Self Business (0% self commission), Direct (L1 @ 20%), Downline (L2–L12 @ 30%),
+ *    and Total Team Business / Commission match the rest of the portal 100%.
+ * 2. Generates a complete daily closing statement for every active member under `/daily_closings/YYYY-MM-DD`.
+ * 3. Updates global closing summary and lastClosingDate in `/settings/lastClosingDate`.
  */
-export async function runDailyClosing(customDate = null) {
-  const closingDate = customDate || getISTDateString();
-  const nowTimestamp = Date.now();
-  const nowIso = new Date().toISOString();
+export async function runDailyClosing(targetDateStr = null) {
+  const closingDate = targetDateStr || getISTDateString();
 
-  const usersSnap = await get(ref(db, 'users'));
-  if (!usersSnap.exists()) {
-    return {
-      success: false,
-      closingDate,
-      message: 'No members found in database.',
-      count: 0
-    };
-  }
-
-  const allUsers = usersSnap.val();
-  const statements = {};
-  const updates = {};
-
-  let totalActiveMembers = 0;
-  let totalSelfBusiness = 0;
-  let totalTeamBusiness = 0;
-  let totalDownlineBusiness = 0;
-  let totalDirectCommission = 0;
-  let totalSelfCommission = 0;
-  let totalDownlineCommission = 0;
-  let totalCommissionDistributed = 0;
-  let totalTrustShare = 0;
-  let totalPendingPayouts = 0;
-
-  for (const [uid, user] of Object.entries(allUsers)) {
-    if (!user || user.status === 'blocked') continue;
-
-    totalActiveMembers++;
-
-    // Calculate deterministic 12-level report from live RTDB hierarchy
-    const report = buildMember12LevelReport(user, allUsers);
-
-    const selfBiz = report.selfBusiness;
-    const directBiz = report.directBusiness;
-    const downBiz = report.downlineBusiness;
-    const teamBiz = report.totalTeamBusiness;
-
-    const selfComm = 0; // STRICTLY 0% SELF COMMISSION
-    const directComm = report.directCommission;
-    const downComm = report.downlineCommission;
-    const totalComm = report.totalCommission;
-
-    const paidPayout = Number(user.commissionPaid || user.paidPayout || user.totalWithdrawn || 0);
-    const unpaidPayout = Math.max(0, totalComm - paidPayout);
-    const walletBal = unpaidPayout;
-
-    // Trust / Foundation retained share on this member's team turnover (50%)
-    const memberTrustShare = Math.max(0, (teamBiz + selfBiz) - totalComm);
-
-    const payoutStatus = unpaidPayout > 0 ? 'Pending' : 'Paid';
-
-    // Simplified level summary for storage
-    const levelSummary = (report.levelBreakdown || []).map(lvl => ({
-      level: lvl.level,
-      rate: lvl.rate,
-      count: lvl.count,
-      business: lvl.business,
-      commission: lvl.commission
-    }));
-
-    const statement = {
-      uid,
-      memberId: user.memberId || 'UCWF-MEMBER',
-      name: `${user.salutation || ''} ${user.name || ''}`.trim() || 'सम्मानित सदस्य',
-      phone: user.phone || '',
-      padNaam: user.padNaam || 'सदस्य',
-      closingDate: closingDate,
-      selfBusiness: selfBiz,
-      directMembersCount: report.directMembersCount,
-      directTeamBusiness: directBiz,
-      downlineMembersCount: report.downlineMembersCount,
-      downlineBusiness: downBiz,
-      teamBusiness: teamBiz,
-      selfBusinessCommission: 0,
-      directTeamCommission: directComm,
-      downlineCommission: downComm,
-      totalCommission: totalComm,
-      paidPayout: paidPayout,
-      unpaidPayout: unpaidPayout,
-      levelBreakdown: levelSummary,
-      trustShare: memberTrustShare,
-      walletBalance: walletBal,
-      payoutStatus: payoutStatus,
-      timestamp: nowTimestamp,
-      generatedAt: nowIso
-    };
-
-    statements[uid] = statement;
-
-    // Daily closing statement under member's node and global closing
-    updates[`/daily_closings/${closingDate}/statements/${uid}`] = statement;
-    updates[`/users/${uid}/daily_closings/${closingDate}`] = statement;
-    updates[`/users/${uid}/walletBalance`] = walletBal;
-    updates[`/users/${uid}/totalCommission`] = totalComm;
-    updates[`/users/${uid}/totalEarned`] = totalComm;
-    updates[`/users/${uid}/selfBusiness`] = selfBiz;
-    updates[`/users/${uid}/totalBusiness`] = selfBiz; // Keep totalBusiness synced with selfBusiness
-    updates[`/users/${uid}/directBusiness`] = directBiz;
-    updates[`/users/${uid}/directTeamBusiness`] = directBiz;
-    updates[`/users/${uid}/directCommission`] = directComm;
-    updates[`/users/${uid}/directTeamCommission`] = directComm;
-    updates[`/users/${uid}/downlineBusiness`] = downBiz;
-    updates[`/users/${uid}/downlineCommission`] = downComm;
-    updates[`/users/${uid}/teamBusiness`] = teamBiz;
-    updates[`/users/${uid}/commissionPaid`] = paidPayout;
-    updates[`/users/${uid}/paidPayout`] = paidPayout;
-    updates[`/users/${uid}/commissionUnpaid`] = unpaidPayout;
-    updates[`/users/${uid}/unpaidPayout`] = unpaidPayout;
-    updates[`/users/${uid}/commissionStatus`] = payoutStatus === 'Pending' ? (paidPayout > 0 ? 'Partial' : 'Unpaid') : 'Paid';
-
-    // Totals accumulation
-    totalSelfBusiness += selfBiz;
-    totalTeamBusiness += teamBiz;
-    totalDownlineBusiness += downBiz;
-    totalDirectCommission += directComm;
-    totalSelfCommission += selfComm;
-    totalDownlineCommission += downComm;
-    totalCommissionDistributed += totalComm;
-    totalTrustShare += memberTrustShare;
-    if (unpaidPayout > 0) {
-      totalPendingPayouts += unpaidPayout;
-    }
-  }
-
-  const summary = {
-    closingDate,
-    timestamp: nowTimestamp,
-    generatedAt: nowIso,
-    totalActiveMembers,
-    totalSelfBusiness,
-    totalTeamBusiness,
-    totalDownlineBusiness,
-    totalDirectCommission,
-    totalSelfCommission,
-    totalDownlineCommission,
-    totalCommission: totalCommissionDistributed,
-    totalTrustShare,
-    totalPendingPayouts,
-    status: 'completed'
-  };
-
-  updates[`/daily_closings/${closingDate}/summary`] = summary;
-  updates[`/closings/${closingDate}`] = summary;
-  updates['/settings/levelRates'] = { ...DEFAULT_LEVEL_RATES };
-  updates['/settings/selfBusinessRate'] = 0;
-
-  if (Object.keys(updates).length > 0) {
-    await update(ref(db), updates);
-  }
-
-  return {
-    success: true,
-    closingDate,
-    count: totalActiveMembers,
-    summary,
-    message: `Midnight daily closing for ${closingDate} executed successfully for ${totalActiveMembers} active members!`
-  };
-}
-
-/**
- * Check if closing for today has already run, if not, execute automatically
- */
-export async function checkAndTriggerMidnightClosing() {
   try {
-    const today = getISTDateString();
-    const snap = await get(ref(db, `daily_closings/${today}/summary`));
-    if (!snap.exists()) {
-      return await runDailyClosing(today);
-    }
-    return { success: true, alreadyRun: true, closingDate: today };
-  } catch (err) {
-    console.warn('Midnight closing check notice:', err);
-    return { success: false, error: err.message };
-  }
-}
-
-/**
- * Fetch historical midnight closing statements for a specific member
- */
-export async function getMemberDailyClosings(uid) {
-  if (!uid) return [];
-  try {
-    const snap = await get(ref(db, `users/${uid}/daily_closings`));
-    if (snap.exists()) {
-      const data = snap.val();
-      return Object.values(data).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-    }
-  } catch (err) {
-    console.error('getMemberDailyClosings error:', err);
-  }
-  return [];
-}
-
-/**
- * Fetch global midnight closing summary for a specific date
- */
-export async function getDailyClosingSummary(dateString) {
-  try {
-    const snap = await get(ref(db, `daily_closings/${dateString}/summary`));
-    if (snap.exists()) {
-      return snap.val();
-    }
-  } catch (err) {
-    console.error('getDailyClosingSummary error:', err);
-  }
-  return null;
-}
-
-/**
- * Fetch all statements for a given date
- */
-export async function getDailyClosingStatements(dateString) {
-  try {
-    const snap = await get(ref(db, `daily_closings/${dateString}/statements`));
-    if (snap.exists()) {
-      return Object.values(snap.val());
-    }
-  } catch (err) {
-    console.error('getDailyClosingStatements error:', err);
-  }
-  return [];
-}
-
-/**
- * Delete a specific closing date statement from RTDB
- */
-export async function deleteDailyClosing(dateString) {
-  if (!dateString) return { success: false };
-  try {
-    await Promise.all([
-      remove(ref(db, `daily_closings/${dateString}`)),
-      remove(ref(db, `closings/${dateString}`))
+    const [usersSnap, ratesSnap] = await Promise.all([
+      get(ref(rtdb, 'users')),
+      get(ref(rtdb, 'settings/levelRates'))
     ]);
 
-    // Also remove from members
-    const usersSnap = await get(ref(db, 'users'));
-    if (usersSnap.exists()) {
-      const users = usersSnap.val();
-      const updates = {};
-      Object.keys(users).forEach(uid => {
-        updates[`/users/${uid}/daily_closings/${dateString}`] = null;
-      });
-      if (Object.keys(updates).length > 0) {
-        await update(ref(db), updates);
-      }
+    if (!usersSnap.exists()) {
+      return { success: false, message: 'कोई सदस्य उपलब्ध नहीं है।', closingDate, count: 0 };
     }
 
-    return { success: true, message: `Closing data for ${dateString} deleted successfully.` };
-  } catch (err) {
-    console.error('deleteDailyClosing error:', err);
-    return { success: false, error: err.message };
-  }
-}
+    const users = usersSnap.val();
+    const rates = normalizeLevelRates(ratesSnap.exists() ? ratesSnap.val() : DEFAULT_LEVEL_RATES);
+    const totalRatePool = round2(
+      Object.values(rates).reduce((acc, r) => acc + Number(r || 0), 0)
+    );
 
-/**
- * Clean & Reset Software Test Data while preserving canonical settings and root founder
- */
-export async function cleanAndResetTestData() {
-  try {
-    const usersSnap = await get(ref(db, 'users'));
-    if (usersSnap.exists()) {
-      const users = usersSnap.val();
-      const updates = {};
-      Object.entries(users).forEach(([uid, u]) => {
-        if (u.memberId === 'UCWF-0001' || u.phone === '9540648402' || u.role === 'admin' || u.is_admin) {
-          // retain root sponsor / admin
-        } else {
-          updates[`/users/${uid}`] = null;
-        }
-      });
-      updates['/payments'] = null;
-      updates['/payment_requests'] = null;
-      updates['/withdrawals'] = null;
-      updates['/daily_closings'] = null;
-      updates['/payout_logs'] = null;
-      if (Object.keys(updates).length > 0) {
-        await update(ref(db), updates);
-      }
-    }
-    return { success: true };
+    const updates = {};
+    const memberStatements = {};
+
+    let globalSelfBusiness = 0;
+    let globalDirectBusiness = 0;
+    let globalDownlineBusiness = 0;
+    let globalTeamBusiness = 0;
+    let globalSelfCommission = 0;
+    let globalDirectCommission = 0;
+    let globalDownlineCommission = 0;
+    let globalTotalCommission = 0;
+    let globalTrustShare = 0;
+    let activeMembersCount = 0;
+
+    Object.entries(users).forEach(([uid, u]) => {
+      if (!u || u.status === 'blocked') return;
+
+      const report = buildMember12LevelReport({ uid, ...u }, users, rates);
+      const selfBiz = report.selfBusiness;
+      const isActive = u.status === 'active' || selfBiz > 0;
+      if (!isActive) return;
+
+      activeMembersCount++;
+
+      const directCount = report.directMembersCount;
+      const directBiz = report.directBusiness;
+      const directComm = report.directCommission;
+      const downlineBiz = report.downlineBusiness;
+      const downlineComm = report.downlineCommission;
+      const teamCount = report.totalTeamMembers;
+      const teamBiz = report.totalTeamBusiness;
+      const selfComm = 0; // Strictly 0% self commission
+      const totalComm = report.totalCommission;
+      const paidPayout = report.paidPayout;
+      const unpaidPayout = report.unpaidPayout;
+
+      // Trust share on this member's personal package (50% retained for social welfare)
+      const memberPackageDistributed = round2((selfBiz * totalRatePool) / 100);
+      const trustShareFromSelfPkg = round2(Math.max(0, selfBiz - memberPackageDistributed));
+
+      const payoutStatus =
+        unpaidPayout <= 0 && paidPayout > 0 && totalComm > 0
+          ? 'Paid'
+          : unpaidPayout > 0
+          ? 'Pending'
+          : 'Settled';
+
+      // Sync member's live fields in /users/{uid}
+      updates[`/users/${uid}/selfBusiness`] = selfBiz;
+      updates[`/users/${uid}/directCount`] = directCount;
+      updates[`/users/${uid}/directMembersCount`] = directCount;
+      updates[`/users/${uid}/directBusiness`] = directBiz;
+      updates[`/users/${uid}/directTeamBusiness`] = directBiz;
+      updates[`/users/${uid}/downlineMembersCount`] = report.downlineMembersCount;
+      updates[`/users/${uid}/downlineBusiness`] = downlineBiz;
+      updates[`/users/${uid}/teamCount`] = teamCount;
+      updates[`/users/${uid}/teamBusiness`] = teamBiz;
+
+      updates[`/users/${uid}/selfBusinessCommission`] = 0;
+      updates[`/users/${uid}/directCommission`] = directComm;
+      updates[`/users/${uid}/directTeamCommission`] = directComm;
+      updates[`/users/${uid}/downlineCommission`] = downlineComm;
+      updates[`/users/${uid}/totalCommission`] = totalComm;
+      updates[`/users/${uid}/totalEarned`] = totalComm;
+      updates[`/users/${uid}/commissionPaid`] = paidPayout;
+      updates[`/users/${uid}/commissionUnpaid`] = unpaidPayout;
+      updates[`/users/${uid}/lastClosingDate`] = closingDate;
+
+      const statement = {
+        uid,
+        memberId: u.memberId || 'UCWF-MEMBER',
+        name: getMemberFullName(u, 'सदस्य'),
+        phone: u.phone || '',
+        sponsorId: u.sponsorId || 'DIRECT',
+        packageAmount: selfBiz,
+        selfBusiness: selfBiz,
+        directCount,
+        directTeamBusiness: directBiz,
+        downlineBusiness: downlineBiz,
+        teamCount,
+        teamBusiness: teamBiz,
+        selfBusinessCommission: selfComm,
+        directTeamCommission: directComm,
+        downlineCommission: downlineComm,
+        totalCommission: totalComm,
+        paidPayout,
+        unpaidPayout,
+        walletBalance: unpaidPayout,
+        totalWithdrawn: paidPayout,
+        trustShare: trustShareFromSelfPkg,
+        payoutStatus,
+        closingDate,
+        closedAt: new Date().toISOString(),
+        timestamp: Date.now()
+      };
+
+      memberStatements[uid] = statement;
+      updates[`/users/${uid}/closingHistory/${closingDate}`] = statement;
+
+      globalSelfBusiness = round2(globalSelfBusiness + selfBiz);
+      globalDirectBusiness = round2(globalDirectBusiness + directBiz);
+      globalDownlineBusiness = round2(globalDownlineBusiness + downlineBiz);
+      globalTeamBusiness = round2(globalTeamBusiness + teamBiz);
+      globalSelfCommission = 0;
+      globalDirectCommission = round2(globalDirectCommission + directComm);
+      globalDownlineCommission = round2(globalDownlineCommission + downlineComm);
+      globalTotalCommission = round2(globalTotalCommission + totalComm);
+      globalTrustShare = round2(globalTrustShare + trustShareFromSelfPkg);
+    });
+
+    const dailyClosingSummary = {
+      closingDate,
+      closedAt: new Date().toISOString(),
+      closingTimeLabel: '12:00 AM IST',
+      timestamp: Date.now(),
+      totalActiveMembers: activeMembersCount,
+      totalSelfBusiness: globalSelfBusiness,
+      totalDirectBusiness: globalDirectBusiness,
+      totalDownlineBusiness: globalDownlineBusiness,
+      totalTeamBusiness: globalTeamBusiness,
+      totalSelfCommission: globalSelfCommission,
+      totalDirectCommission: globalDirectCommission,
+      totalDownlineCommission: globalDownlineCommission,
+      totalCommission: globalTotalCommission,
+      totalTrustShare: globalTrustShare,
+      status: 'completed'
+    };
+
+    updates[`/daily_closings/${closingDate}/summary`] = dailyClosingSummary;
+    updates[`/daily_closings/${closingDate}/statements`] = memberStatements;
+    updates['/settings/lastClosingDate'] = closingDate;
+    updates['/settings/lastClosingTimestamp'] = Date.now();
+
+    await update(ref(rtdb), updates);
+
+    return {
+      success: true,
+      closingDate,
+      summary: dailyClosingSummary,
+      count: activeMembersCount
+    };
   } catch (err) {
-    console.error('cleanAndResetTestData error:', err);
+    console.error('Daily closing error:', err);
     throw err;
   }
 }
 
-export default {
-  getISTDateString,
-  getTimeUntilMidnightIST,
-  runDailyClosing,
-  checkAndTriggerMidnightClosing,
-  getMemberDailyClosings,
-  getDailyClosingSummary,
-  getDailyClosingStatements,
-  deleteDailyClosing,
-  cleanAndResetTestData
-};
+/**
+ * Auto-check and trigger 12:00 AM IST midnight closing if today's date hasn't been closed yet
+ */
+export async function checkAndTriggerMidnightClosing() {
+  try {
+    const todayIST = getISTDateString();
+    const lastClosingSnap = await get(ref(rtdb, 'settings/lastClosingDate'));
+    const lastClosedDate = lastClosingSnap.exists() ? lastClosingSnap.val() : null;
+
+    if (lastClosedDate !== todayIST) {
+      return await runDailyClosing(todayIST);
+    }
+    return { success: true, alreadyClosed: true, closingDate: todayIST };
+  } catch (err) {
+    console.warn('Auto midnight closing check warning:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * One-Time Auto-Migration: Ensure all registered members with packageAmount > 0 are marked 'active'
+ * and run daily closing calculation so all Self, Direct, Downline, Team & Commission figures are synced.
+ */
+export async function autoMigrateAndRecalculateUsers() {
+  try {
+    const snap = await get(ref(rtdb, 'users'));
+    if (!snap.exists()) return;
+    const users = snap.val();
+    const updates = {};
+    let needsUpdate = false;
+
+    Object.entries(users).forEach(([uid, u]) => {
+      if (!u) return;
+      const pkg = parseAmount(u);
+      if (pkg > 0 && u.status !== 'active' && u.status !== 'blocked') {
+        updates[`/users/${uid}/status`] = 'active';
+        updates[`/users/${uid}/isApproved`] = true;
+        needsUpdate = true;
+      }
+      if (pkg > 0 && !u.selfBusiness) {
+        updates[`/users/${uid}/selfBusiness`] = pkg;
+        needsUpdate = true;
+      }
+    });
+
+    if (needsUpdate) {
+      await update(ref(rtdb), updates);
+    }
+
+    await runDailyClosing();
+  } catch (err) {
+    console.warn('Auto migration warning:', err);
+  }
+}

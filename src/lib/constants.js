@@ -304,10 +304,21 @@ export const safeText = (val, fallback = "") => {
  */
 export const formatCurrency = (val) => {
   if (val === null || val === undefined || val === '') return '₹0';
-  const cleanStr = String(val).replace(/[₹\sRs\.रुपयेINR,]/gi, '').trim();
+  if (typeof val === 'number') {
+    if (isNaN(val)) return '₹0';
+    const rounded = Math.round((val + Number.EPSILON) * 100) / 100;
+    return '₹' + rounded.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  }
+  const cleanStr = String(val)
+    .replace(/Rs\.?/gi, '')
+    .replace(/INR/gi, '')
+    .replace(/रुपये/g, '')
+    .replace(/[₹,\s]/g, '')
+    .trim();
   const num = Number(cleanStr);
   if (isNaN(num)) return '₹0';
-  return '₹' + num.toLocaleString('en-IN');
+  const rounded = Math.round((num + Number.EPSILON) * 100) / 100;
+  return '₹' + rounded.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 };
 
 /**

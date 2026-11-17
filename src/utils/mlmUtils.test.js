@@ -7,19 +7,33 @@ import {
   buildMember12LevelReport,
   calculateJoinCommission,
   normalizeSponsorId,
+  normalizeLevelRates,
+  extractMemberJoinDateIST,
+  formatMemberJoiningDate,
 } from './mlmUtils.js';
 import { formatCurrency, safeText } from '../lib/constants.js';
+import { getISTDateString, getTimeUntilMidnightIST } from './closingEngine.js';
 
 test('12-level commission rates sum to exactly 50%', () => {
   const totalPct = Object.values(DEFAULT_LEVEL_RATES).reduce((a, b) => a + b, 0);
   assert.equal(totalPct, 50);
 });
 
-test('parseAmount handles numbers, formatted currency strings, and user objects', () => {
+test('parseAmount handles numbers, formatted currency strings including Rs. prefix, and user objects', () => {
   assert.equal(parseAmount(5100), 5100);
   assert.equal(parseAmount('₹2,100'), 2100);
+  assert.equal(parseAmount('Rs. 2,100'), 2100);
+  assert.equal(parseAmount('INR 5,100.50'), 5100.5);
   assert.equal(parseAmount({ packageTier: 500, selfBusiness: 5100 }), 5100);
   assert.equal(parseAmount(null), 0);
+});
+
+test('formatCurrency preserves decimal points for fractional commissions (12.5 and 7.5 on ₹500)', () => {
+  assert.equal(formatCurrency(12.5), '₹12.5');
+  assert.equal(formatCurrency(7.5), '₹7.5');
+  assert.equal(formatCurrency('12.5'), '₹12.5');
+  assert.equal(formatCurrency('₹ 1,100'), '₹1,100');
+  assert.equal(formatCurrency('Rs. 2,100'), '₹2,100');
 });
 
 test('isDirectChild matches full ID, 4-digit suffix, and phone, and prevents self-loops', () => {
@@ -64,14 +78,30 @@ test('calculateJoinCommission computes upline payouts and trust share', () => {
   assert.equal(result.netTrustShare, 800);
 });
 
-test('normalizeSponsorId and formatting helpers work safely', () => {
+test('normalizeSponsorId, normalizeLevelRates, and date/closing helpers work safely', () => {
   const users = {
     u1: { uid: 'u1', memberId: 'UCWF-2026-6401', name: 'Raam' },
     u2: { uid: 'u2', memberId: 'UCWF-2026-9999', sponsorId: '6401' },
   };
   assert.equal(normalizeSponsorId(users.u2, users), 'UCWF-2026-6401');
-  assert.equal(formatCurrency('₹ 1,100'), '₹1,100');
   assert.equal(safeText({ seconds: 1700000000 }).length > 0, true);
+
+  // Legacy rates L2=10, L3=8 heal automatically to canonical 50% structure
+  const healed = normalizeLevelRates({ 1: 20, 2: 10, 3: 8 });
+  assert.equal(healed[2], 8);
+  assert.equal(healed[3], 5);
+  assert.equal(healed[6], 2.5);
+  assert.equal(healed[8], 1.5);
+
+  // DD/MM/YYYY and ISO date extraction
+  assert.equal(extractMemberJoinDateIST({ applicationDate: '17/10/2026' }), '2026-10-17');
+  assert.equal(formatMemberJoiningDate({ joiningDate: '2026-11-16' }), '16/11/2026');
+
+  // Closing countdown returns valid 00:00:00 format and positive remaining ms
+  const countdown = getTimeUntilMidnightIST();
+  assert.equal(/^\d{2}:\d{2}:\d{2}$/.test(countdown.formatted), true);
+  assert.equal(countdown.totalMs > 0 && countdown.totalMs <= 86400000, true);
+  assert.equal(/^\d{4}-\d{2}-\d{2}$/.test(getISTDateString()), true);
 });
 
 test('handles 12 direct members under 1 sponsor with zero truncation', () => {
@@ -95,7 +125,7 @@ test('handles 12 direct members under 1 sponsor with zero truncation', () => {
   assert.equal(report.totalCommission, 2400);
 });
 
-test('traverses full 12-level vertical chain (L1 to L12) and distributes exact 50% pool', () => {
+test('traverses full 12-level vertical chain on ₹500 package and preserves exact 12.5 (L6) and 7.5 (L8) totalling ₹250 (50%)', () => {
   const users = {
     n0: { uid: 'n0', memberId: 'UCWF-2026-0835', name: 'Shri Ram', packageTier: 500, selfBusiness: 5100, sponsorId: 'DIRECT' },
   };
@@ -105,7 +135,7 @@ test('traverses full 12-level vertical chain (L1 to L12) and distributes exact 5
       uid: `n${lvl}`,
       memberId: `UCWF-2026-62${String(lvl).padStart(2, '0')}`,
       name: `Chain L${lvl}`,
-      packageTier: 1000,
+      packageTier: 500,
       sponsorId: prevId,
     };
   }
@@ -115,7 +145,12 @@ test('traverses full 12-level vertical chain (L1 to L12) and distributes exact 5
   assert.equal(report.directMembersCount, 1);
   assert.equal(report.downlineMembersCount, 11);
   assert.equal(report.totalTeamMembers, 12);
-  assert.equal(report.totalTeamBusiness, 12000);
-  // 1000 * (20+8+5+4+3+2.5+2+1.5+1+1+1+1)% = 1000 * 50% = 500
-  assert.equal(report.totalCommission, 500);
+  assert.equal(report.totalTeamBusiness, 6000);
+  // Check L6 (2.5% of 500 = 12.5) and L8 (1.5% of 500 = 7.5)
+  const l6Row = report.levels.find(r => r.level === 6);
+  const l8Row = report.levels.find(r => r.level === 8);
+  assert.equal(l6Row.commission, 12.5);
+  assert.equal(l8Row.commission, 7.5);
+  // 500 * 50% = 250 total commission across L1..L12
+  assert.equal(report.totalCommission, 250);
 });

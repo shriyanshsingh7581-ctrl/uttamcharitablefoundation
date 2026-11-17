@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   IndianRupee, 
   CreditCard, 
@@ -22,29 +22,52 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { rtdb } from '../lib/firebase';
 import { ref, onValue, push, set, update } from 'firebase/database';
 import { formatINR, safeText } from '../lib/constants';
+import { buildMember12LevelReport, round2 } from '../utils/mlmUtils';
 
 export default function Wallet() {
-  const { currentUser, userProfile } = useAuth();
+  const { currentUser, userProfile, member } = useAuth();
   const { isHindi, t } = useLanguage();
+  const activeProfile = userProfile || member;
 
+  const [allUsers, setAllUsers] = useState({});
   const [withdrawals, setWithdrawals] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [payoutMode, setPayoutMode] = useState('cash'); // 'cash' (Default) | 'upi' | 'bank'
-  const [bankName, setBankName] = useState(userProfile?.bankDetails?.bankName || '');
-  const [accountNo, setAccountNo] = useState(userProfile?.bankDetails?.accountNo || '');
-  const [ifsc, setIfsc] = useState(userProfile?.bankDetails?.ifsc || '');
-  const [upiId, setUpiId] = useState(userProfile?.bankDetails?.upiId || '');
+  const [bankName, setBankName] = useState(activeProfile?.bankDetails?.bankName || '');
+  const [accountNo, setAccountNo] = useState(activeProfile?.bankDetails?.accountNo || '');
+  const [ifsc, setIfsc] = useState(activeProfile?.bankDetails?.ifsc || '');
+  const [upiId, setUpiId] = useState(activeProfile?.bankDetails?.upiId || '');
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  const walletBalance = Number(userProfile?.walletBalance || 0);
-  const selfBusiness = Number(userProfile?.selfBusiness || userProfile?.packageAmount || 500);
-  const teamBusiness = Number(userProfile?.teamBusiness || 0);
-  const downlineBusiness = Number(userProfile?.downlineBusiness || 0);
-  const teamCount = Number(userProfile?.teamCount || 0);
+  // Load allUsers for live 12-level business & commission calculation
+  useEffect(() => {
+    const usersRef = ref(rtdb, 'users');
+    const unsubUsers = onValue(
+      usersRef,
+      (snap) => {
+        setAllUsers(snap.exists() ? snap.val() : {});
+      },
+      (err) => console.warn('Wallet RTDB users listener warning:', err)
+    );
+    return () => unsubUsers();
+  }, []);
+
+  const liveReport = useMemo(() => {
+    if (!activeProfile) return null;
+    return buildMember12LevelReport(activeProfile, allUsers);
+  }, [activeProfile, allUsers]);
+
+  const selfBusiness = liveReport ? liveReport.selfBusiness : Number(activeProfile?.selfBusiness || activeProfile?.packageAmount || 500);
+  const teamBusiness = liveReport ? liveReport.totalTeamBusiness : Number(activeProfile?.teamBusiness || 0);
+  const downlineBusiness = liveReport ? liveReport.downlineBusiness : Number(activeProfile?.downlineBusiness || 0);
+  const teamCount = liveReport ? liveReport.totalTeamMembers : Number(activeProfile?.teamCount || 0);
+  const walletBalance = liveReport
+    ? round2(Math.max(Number(activeProfile?.walletBalance || 0), liveReport.unpaidPayout))
+    : Number(activeProfile?.walletBalance || 0);
 
   // Sync saved bank details if available
   useEffect(() => {
@@ -281,7 +304,7 @@ export default function Wallet() {
                 <TrendingUp className="w-3.5 h-3.5" />
                 <span>{isHindi ? 'कमीशन दर:' : 'Rate:'}</span>
               </span>
-              <span className="font-mono font-bold text-white">10% - 1%</span>
+              <span className="font-mono font-bold text-white">8% - 1%</span>
             </div>
           </div>
 

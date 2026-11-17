@@ -1,48 +1,40 @@
-import { db, ref, get, update, set } from '../lib/firebase';
-import { 
-  isDirectChild,
-  isSponsoredBy, 
-  findParentMember, 
-  getMemberFullName, 
-  computeUnlimitedGenerationTree,
-  buildMember12LevelReport,
+/**
+ * 100% Unified 12-Level Generation Commission Engine
+ * Uttam Charitable Welfare Foundation (Regd. Section 8 Act 2013)
+ *
+ * Uses the unified MLM engine in `./mlmUtils.js` for:
+ * - Unlimited width (infinite direct referrals per member)
+ * - 12-level depth (Level 1 to Level 12)
+ * - Strictly 0% self-commission on own package
+ * - Universal sponsor resolution (Member ID, last 4+ digits, 10-digit phone, UID)
+ */
+
+import { db, ref, get, update, push, set } from '../lib/firebase';
+import {
   DEFAULT_LEVEL_RATES,
-  CANONICAL_LEVEL_RATES,
+  round2,
+  normalizeLevelRates,
+  buildMember12LevelReport,
+  computeUnlimitedGenerationTree,
+  getUplineChainFromMap,
+  getMemberFullName,
   normalizeSponsorId,
   parseAmount,
   normId,
   lastDigits
 } from './mlmUtils';
 
-export {
-  isDirectChild,
-  isSponsoredBy,
-  findParentMember,
-  getMemberFullName,
-  computeUnlimitedGenerationTree,
-  buildMember12LevelReport,
-  DEFAULT_LEVEL_RATES,
-  CANONICAL_LEVEL_RATES,
-  normalizeSponsorId,
-  parseAmount,
-  normId,
-  lastDigits
-};
-
-/**
- * Canonical 12-Level Rates (Total 50% Distribution)
- */
-export const LOCKED_12_LEVEL_RATES = DEFAULT_LEVEL_RATES;
+export { DEFAULT_LEVEL_RATES, normalizeLevelRates };
 
 /**
  * Fetch saved Level 1 to 12 Commission Rates from Firebase RTDB (/settings/levelRates)
- * Returns canonical { 1: 20, 2: 8, 3: 5, 4: 4, 5: 3, 6: 2.5, 7: 2, 8: 1.5, 9: 1, 10: 1, 11: 1, 12: 1 }
+ * Always normalizes and heals stale/legacy rates to the canonical 50% structure.
  */
 export async function getSavedLevelRates() {
   try {
     const snap = await get(ref(db, 'settings/levelRates'));
-    if (snap.exists()) {
-      return snap.val();
+    if (snap.exists() && snap.val()) {
+      return normalizeLevelRates(snap.val());
     }
   } catch (err) {
     console.warn('Could not fetch saved levelRates:', err);
@@ -51,379 +43,413 @@ export async function getSavedLevelRates() {
 }
 
 /**
- * Fetch saved Self Business Commission Rate (% on member's own contribution)
- * Stored at /settings/selfBusinessRate -> STRICTLY 0%
+ * Self Business Commission Rate is strictly 0%
  */
 export async function getSavedSelfBusinessRate() {
   return 0;
 }
 
 /**
- * Save manual Self Business Commission Rate in Firebase RTDB (/settings/selfBusinessRate)
+ * Save manual Self Business Commission Rate in Firebase RTDB
  */
 export async function saveSelfBusinessRate(rate) {
-  await set(ref(db, 'settings/selfBusinessRate'), 0);
-  return 0;
+  const num = Math.max(0, Number(rate) || 0);
+  await set(ref(db, 'settings/selfBusinessRate'), num);
+  return num;
 }
 
 /**
  * Save manual Level 1 to 12 Commission Rates in Firebase RTDB (/settings/levelRates)
  */
 export async function saveLevelRates(ratesMap) {
-  const cleanRates = {};
-  for (let i = 1; i <= 12; i++) {
-    cleanRates[i] = Number(ratesMap[i] ?? DEFAULT_LEVEL_RATES[i]);
-  }
+  const cleanRates = normalizeLevelRates(ratesMap);
   await set(ref(db, 'settings/levelRates'), cleanRates);
   return cleanRates;
 }
 
 /**
- * Traverse the 12-level upline chain for any given member by UID, Member ID, or Mobile Number
+ * Trace up to 12 Upline Ancestors for a given Member ID or User UID
  */
-export async function getUplineChain(memberUidOrId) {
-  if (!memberUidOrId) return [];
+export async function getUplineChain(startSponsorIdOrUid) {
+  if (!startSponsorIdOrUid || startSponsorIdOrUid === 'DIRECT') return [];
 
-  const usersSnap = await get(ref(db, 'users'));
-  if (!usersSnap.exists()) return [];
+  try {
+    const usersSnap = await get(ref(db, 'users'));
+    if (!usersSnap.exists()) return [];
+    const allUsers = usersSnap.val();
+    const rates = await getSavedLevelRates();
 
-  const allUsers = usersSnap.val();
-  const allList = Object.values(allUsers).filter(Boolean);
+    const usersList = Object.entries(allUsers).map(([uid, data]) => ({
+      uid,
+      ...data
+    }));
 
-  const cleanSearch = normId(memberUidOrId);
-  const cleanPhone = lastDigits(memberUidOrId).slice(-10);
+    const cleanQ = normId(startSponsorIdOrUid);
+    const cleanPhone = lastDigits(startSponsorIdOrUid).slice(-10);
 
-  let sourceUser = allUsers[memberUidOrId];
-  if (!sourceUser) {
-    sourceUser = allList.find(u => 
-      normId(u.memberId) === cleanSearch ||
-      (cleanPhone.length === 10 && lastDigits(u.phone).slice(-10) === cleanPhone) ||
-      u.uid === memberUidOrId
+    // Check if startSponsorIdOrUid is a member whose upline we want
+    const matchedMember = usersList.find(u => 
+      normId(u.memberId) === cleanQ ||
+      u.uid === startSponsorIdOrUid ||
+      (cleanPhone.length === 10 && lastDigits(u.phone).slice(-10) === cleanPhone)
     );
+
+    if (matchedMember) {
+      // Build chain starting from matchedMember's sponsor (Level 1 .. 12)
+      return getUplineChainFromMap(matchedMember, allUsers, rates);
+    }
+
+    // Or if startSponsorIdOrUid is the immediate sponsor itself, create a virtual child to trace up from sponsor as Level 1
+    const virtualChild = {
+      uid: '__virtual_child__',
+      memberId: '__VIRTUAL__',
+      sponsorId: startSponsorIdOrUid
+    };
+    return getUplineChainFromMap(virtualChild, allUsers, rates);
+  } catch (err) {
+    console.error('Error tracing upline chain:', err);
+    return [];
   }
-
-  if (!sourceUser) return [];
-
-  const chain = [];
-  const visited = new Set();
-  const rootUid = sourceUser.uid || sourceUser.id;
-  if (rootUid) visited.add(rootUid);
-  if (sourceUser.memberId) visited.add(normId(sourceUser.memberId));
-
-  let current = sourceUser;
-
-  for (let lvl = 1; lvl <= 12; lvl++) {
-    const parent = findParentMember(current, allUsers);
-    if (!parent) break;
-
-    const parentUid = parent.uid || parent.id;
-    const parentMem = normId(parent.memberId);
-    if ((parentUid && visited.has(parentUid)) || (parentMem && visited.has(parentMem))) break;
-    if (parentUid) visited.add(parentUid);
-    if (parentMem) visited.add(parentMem);
-
-    chain.push({
-      level: lvl,
-      user: parent,
-      uid: parentUid,
-      memberId: parent.memberId || 'N/A',
-      name: getMemberFullName(parent),
-      phone: parent.phone || '',
-      walletBalance: Number(parent.walletBalance || 0),
-      totalEarned: Number(parent.totalEarned || 0)
-    });
-
-    current = parent;
-  }
-
-  return chain;
 }
 
 /**
- * Distribute manual or direct commission across upline chain
+ * Distribute 100% Manual Commission to Selected Upline Levels (Level 1 to 12)
  */
 export async function distributeManualCommission({
   sourceMember,
-  packageAmount = 500,
+  packageAmount,
   manualDistributions = []
 }) {
-  const cleanPkg = parseAmount(packageAmount) || 500;
-  if (!manualDistributions || manualDistributions.length === 0) {
-    return { 
-      success: false, 
-      count: 0, 
-      totalDistributed: 0, 
-      directCommissionPaid: 0, 
-      downlineCommissionPaid: 0, 
-      trustShareAmount: cleanPkg, 
-      message: 'No distribution provided' 
-    };
+  const pkgAmount = round2(parseAmount(packageAmount));
+  if (!pkgAmount || pkgAmount <= 0) {
+    return { distributed: [], totalDistributed: 0, count: 0 };
   }
 
-  const usersSnap = await get(ref(db, 'users'));
-  if (!usersSnap.exists()) {
-    throw new Error('Users database is empty');
-  }
+  try {
+    const usersSnap = await get(ref(db, 'users'));
+    const allUsers = usersSnap.exists() ? usersSnap.val() : {};
 
-  const allUsers = usersSnap.val();
-  const updates = {};
-  const nowTimestamp = Date.now();
-  const nowReadable = new Date().toLocaleString('en-IN', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
+    const batchUpdates = {};
+    const distributedRecords = [];
+    let totalDistributed = 0;
+    let directCommissionPaid = 0;
+    let downlineCommissionPaid = 0;
+    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
 
-  let distributedCount = 0;
-  let totalPaid = 0;
-  let directCommissionPaid = 0;
-  let downlineCommissionPaid = 0;
+    for (const item of manualDistributions) {
+      const level = Number(item.level);
+      const targetUid = item.uid;
+      const ratePercentage = Number(item.percentage || 0);
+      const rawAmount = item.amount !== undefined && item.amount !== ''
+        ? round2(item.amount)
+        : round2((pkgAmount * ratePercentage) / 100);
 
-  for (const item of manualDistributions) {
-    if (!item.enabled && item.enabled !== undefined) continue;
+      if (!targetUid || !allUsers[targetUid] || isNaN(rawAmount) || rawAmount <= 0) {
+        continue;
+      }
 
-    const creditAmount = parseAmount(item.amount);
-    if (creditAmount <= 0) continue;
+      const uplineUser = allUsers[targetUid];
+      const currentWallet = round2(uplineUser.walletBalance || 0);
+      const currentTotalEarned = round2(uplineUser.totalEarned || 0);
+      const currentTotalComm = round2(uplineUser.totalCommission || currentTotalEarned || 0);
+      const currentTeamBiz = round2(uplineUser.teamBusiness || 0);
+      const currentDownlineBiz = round2(uplineUser.downlineBusiness || 0);
+      const currentDirectBiz = round2(uplineUser.directBusiness || uplineUser.directTeamBusiness || 0);
+      const currentDirectComm = round2(uplineUser.directCommission || uplineUser.directTeamCommission || 0);
+      const currentDownlineComm = round2(uplineUser.downlineCommission || 0);
+      const currentPaid = round2(uplineUser.commissionPaid || uplineUser.paidPayout || uplineUser.totalWithdrawn || 0);
 
-    const targetUid = item.uid;
-    const targetUser = allUsers[targetUid];
-    if (!targetUser) continue;
+      const newTotalComm = round2(currentTotalComm + rawAmount);
+      const newUnpaid = round2(Math.max(0, newTotalComm - currentPaid));
 
-    const currentBal = Number(targetUser.walletBalance || 0);
-    const currentEarned = Number(targetUser.totalEarned || 0);
-    const currentDirect = Number(targetUser.directCommission || 0);
-    const currentDownline = Number(targetUser.downlineCommission || 0);
+      // 1. Update upline wallet & lifetime earnings
+      batchUpdates[`/users/${targetUid}/walletBalance`] = round2(currentWallet + rawAmount);
+      batchUpdates[`/users/${targetUid}/totalEarned`] = round2(currentTotalEarned + rawAmount);
+      batchUpdates[`/users/${targetUid}/totalCommission`] = newTotalComm;
+      batchUpdates[`/users/${targetUid}/commissionUnpaid`] = newUnpaid;
+      batchUpdates[`/users/${targetUid}/teamBusiness`] = round2(currentTeamBiz + pkgAmount);
 
-    const newBal = currentBal + creditAmount;
-    const newEarned = currentEarned + creditAmount;
+      if (level === 1) {
+        batchUpdates[`/users/${targetUid}/directBusiness`] = round2(currentDirectBiz + pkgAmount);
+        batchUpdates[`/users/${targetUid}/directTeamBusiness`] = round2(currentDirectBiz + pkgAmount);
+        batchUpdates[`/users/${targetUid}/directCommission`] = round2(currentDirectComm + rawAmount);
+        batchUpdates[`/users/${targetUid}/directTeamCommission`] = round2(currentDirectComm + rawAmount);
+        directCommissionPaid = round2(directCommissionPaid + rawAmount);
+      } else {
+        batchUpdates[`/users/${targetUid}/downlineBusiness`] = round2(currentDownlineBiz + pkgAmount);
+        batchUpdates[`/users/${targetUid}/downlineCommission`] = round2(currentDownlineComm + rawAmount);
+        downlineCommissionPaid = round2(downlineCommissionPaid + rawAmount);
+      }
 
-    updates[`/users/${targetUid}/walletBalance`] = newBal;
-    updates[`/users/${targetUid}/totalEarned`] = newEarned;
+      // 2. Log transaction
+      const txRef = push(ref(db, 'transactions'));
+      const txId = txRef.key;
+      const sourceName = getMemberFullName(sourceMember, 'नव सदस्य');
 
-    const currentDirectBiz = Number(targetUser.directBusiness || 0);
-    const currentDownlineBiz = Number(targetUser.downlineBusiness || 0);
-    const currentTeamBiz = Number(targetUser.teamBusiness || 0);
+      const txRecord = {
+        id: txId,
+        userId: targetUid,
+        memberId: uplineUser.memberId || 'UCWF-MEMBER',
+        userName: getMemberFullName(uplineUser),
+        sourceUserId: sourceMember?.uid || '',
+        sourceMemberId: sourceMember?.memberId || '',
+        sourceMemberName: sourceName,
+        type: 'level_commission',
+        mode: 'manual_admin',
+        level,
+        ratePercentage,
+        packageAmount: pkgAmount,
+        amount: rawAmount,
+        note: `स्तर ${level} मानदेय (${ratePercentage}%): ${sourceName} (${sourceMember?.memberId || 'ID'}) के ₹${pkgAmount} सहयोग संकल्प से प्राप्त`,
+        status: 'credited',
+        createdAt: nowIso,
+        timestamp: nowMs
+      };
 
-    if (Number(item.level) === 1) {
-      const newDirect = currentDirect + creditAmount;
-      const newDirectBiz = currentDirectBiz + cleanPkg;
-      const newTeamBiz = currentTeamBiz + cleanPkg;
-
-      updates[`/users/${targetUid}/directCommission`] = newDirect;
-      updates[`/users/${targetUid}/directTeamCommission`] = newDirect;
-      updates[`/users/${targetUid}/directBusiness`] = newDirectBiz;
-      updates[`/users/${targetUid}/directTeamBusiness`] = newDirectBiz;
-      updates[`/users/${targetUid}/teamBusiness`] = newTeamBiz;
-      updates[`/users/${targetUid}/totalCommission`] = newDirect + currentDownline;
-
-      directCommissionPaid += creditAmount;
-    } else {
-      const newDownline = currentDownline + creditAmount;
-      const newDownlineBiz = currentDownlineBiz + cleanPkg;
-      const newTeamBiz = currentTeamBiz + cleanPkg;
-
-      updates[`/users/${targetUid}/downlineCommission`] = newDownline;
-      updates[`/users/${targetUid}/downlineBusiness`] = newDownlineBiz;
-      updates[`/users/${targetUid}/teamBusiness`] = newTeamBiz;
-      updates[`/users/${targetUid}/totalCommission`] = currentDirect + newDownline;
-
-      downlineCommissionPaid += creditAmount;
+      batchUpdates[`/transactions/${txId}`] = txRecord;
+      distributedRecords.push(txRecord);
+      totalDistributed = round2(totalDistributed + rawAmount);
     }
 
-    const txId = `TXN-COMM-${nowTimestamp}-L${item.level}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-    updates[`/transactions/${txId}`] = {
-      id: txId,
-      userId: targetUid,
-      memberId: item.memberId || targetUser.memberId || 'N/A',
-      amount: creditAmount,
-      type: Number(item.level) === 1 ? 'direct_commission' : 'downline_commission',
-      commissionCategory: Number(item.level) === 1 ? 'direct' : 'downline',
-      level: Number(item.level),
-      percentage: Number(item.percentage || 0),
-      fromUid: sourceMember.uid || 'N/A',
-      fromMemberId: sourceMember.memberId || 'N/A',
-      fromName: `${sourceMember.salutation || ''} ${sourceMember.name || 'Member'}`.trim(),
-      fromPhone: sourceMember.phone || '',
-      packageAmount: cleanPkg,
-      status: 'credited',
-      note: Number(item.level) === 1 
-        ? `प्रत्यक्ष (Direct Level 1) मानदेय: ${item.percentage}% (₹${creditAmount})`
-        : `डाउनलाइन (Downline Level ${item.level}) मानदेय: ${item.percentage}% (₹${creditAmount})`,
-      createdAt: nowReadable,
-      timestamp: nowTimestamp
+    // 3. Ensure sourceMember selfBusiness is recorded with 0% self commission
+    if (sourceMember?.uid && allUsers[sourceMember.uid]) {
+      const srcUser = allUsers[sourceMember.uid];
+      const srcPaid = round2(srcUser.commissionPaid || srcUser.paidPayout || srcUser.totalWithdrawn || 0);
+      const srcTotalComm = round2(srcUser.totalCommission || 0);
+      batchUpdates[`/users/${sourceMember.uid}/selfBusiness`] = pkgAmount;
+      batchUpdates[`/users/${sourceMember.uid}/packageAmount`] = pkgAmount;
+      batchUpdates[`/users/${sourceMember.uid}/packageTier`] = pkgAmount;
+      batchUpdates[`/users/${sourceMember.uid}/selfBusinessCommission`] = 0;
+      batchUpdates[`/users/${sourceMember.uid}/commissionUnpaid`] = round2(Math.max(0, srcTotalComm - srcPaid));
+      batchUpdates[`/users/${sourceMember.uid}/status`] = 'active';
+      batchUpdates[`/users/${sourceMember.uid}/isApproved`] = true;
+    }
+
+    // 4. Record master payout ledger entry
+    const trustShare = round2(Math.max(0, pkgAmount - totalDistributed));
+    const payoutRef = push(ref(db, 'payout_records'));
+    const payoutId = payoutRef.key;
+
+    batchUpdates[`/payout_records/${payoutId}`] = {
+      id: payoutId,
+      sourceUserId: sourceMember?.uid || '',
+      sourceMemberId: sourceMember?.memberId || 'N/A',
+      sourceMemberName: getMemberFullName(sourceMember, 'सदस्य'),
+      packageAmount: pkgAmount,
+      directCommission: directCommissionPaid,
+      downlineCommission: downlineCommissionPaid,
+      totalDistributed,
+      trustShare,
+      levelsCount: distributedRecords.length,
+      distributions: distributedRecords,
+      createdAt: nowIso,
+      timestamp: nowMs
     };
 
-    targetUser.walletBalance = newBal;
-    targetUser.totalEarned = newEarned;
-    distributedCount++;
-    totalPaid += creditAmount;
+    if (Object.keys(batchUpdates).length > 0) {
+      await update(ref(db), batchUpdates);
+    }
+
+    return {
+      distributed: distributedRecords,
+      totalDistributed,
+      directCommissionPaid,
+      downlineCommissionPaid,
+      trustShare,
+      count: distributedRecords.length
+    };
+  } catch (err) {
+    console.error('Manual commission distribution failed:', err);
+    throw err;
   }
-
-  const trustShareAmount = Math.max(0, cleanPkg - totalPaid);
-
-  if (sourceMember.uid && allUsers[sourceMember.uid]) {
-    updates[`/users/${sourceMember.uid}/selfBusiness`] = cleanPkg;
-    updates[`/users/${sourceMember.uid}/selfBusinessCommission`] = 0; // STRICTLY 0%
-  }
-
-  // Ensure canonical locked rates in settings
-  updates['/settings/levelRates'] = { ...DEFAULT_LEVEL_RATES };
-  updates['/settings/selfBusinessRate'] = 0;
-
-  if (Object.keys(updates).length > 0) {
-    await update(ref(db), updates);
-  }
-
-  return {
-    success: true,
-    count: distributedCount,
-    totalDistributed: totalPaid,
-    directCommissionPaid,
-    downlineCommissionPaid,
-    trustShareAmount
-  };
 }
 
 /**
- * Distribute canonical 12-level commission
+ * Automatically Distribute 12-Level Generation Commission on Registration / Activation
  */
 export async function distribute12LevelCommission(memberUidOrId, packageAmount) {
   try {
-    const cleanPkg = parseAmount(packageAmount) || 500;
-    const chain = await getUplineChain(memberUidOrId);
-    const savedRates = await getSavedLevelRates();
-
     const usersSnap = await get(ref(db, 'users'));
-    let sourceMember = { uid: memberUidOrId };
-    if (usersSnap.exists()) {
-      const allUsers = usersSnap.val();
-      sourceMember = allUsers[memberUidOrId] || Object.values(allUsers).find(
-        (u) => u.memberId === memberUidOrId || u.uid === memberUidOrId
-      ) || { uid: memberUidOrId };
+    if (!usersSnap.exists()) return { totalDistributed: 0, count: 0 };
+
+    const allUsers = usersSnap.val();
+    const rates = await getSavedLevelRates();
+
+    let sourceMember = allUsers[memberUidOrId];
+    if (!sourceMember) {
+      const foundEntry = Object.entries(allUsers).find(
+        ([, u]) => u && normId(u.memberId) === normId(memberUidOrId)
+      );
+      if (foundEntry) {
+        sourceMember = { uid: foundEntry[0], ...foundEntry[1] };
+      }
+    } else {
+      sourceMember = { uid: memberUidOrId, ...sourceMember };
     }
 
-    const manualList = chain.map((node) => {
-      const pct = Number(savedRates[node.level] || DEFAULT_LEVEL_RATES[node.level] || 0);
-      const amt = (cleanPkg * pct) / 100;
-      return {
-        level: node.level,
-        uid: node.uid,
-        memberId: node.memberId,
-        name: node.name,
-        percentage: pct,
-        amount: amt,
-        enabled: amt > 0
-      };
-    });
+    if (!sourceMember) return { totalDistributed: 0, count: 0 };
+
+    const pkg = round2(parseAmount(packageAmount || sourceMember));
+    const chain = getUplineChainFromMap(sourceMember, allUsers, rates);
+
+    const distributions = chain.map(node => ({
+      level: node.level,
+      uid: node.uid,
+      percentage: node.rate,
+      amount: round2((pkg * node.rate) / 100)
+    }));
 
     return await distributeManualCommission({
       sourceMember,
-      packageAmount: cleanPkg,
-      manualDistributions: manualList
+      packageAmount: pkg,
+      manualDistributions: distributions
     });
   } catch (err) {
     console.error('distribute12LevelCommission error:', err);
-    return { success: false, error: err.message, levelsDistributed: 0, totalDistributed: 0 };
+    return { totalDistributed: 0, count: 0 };
   }
 }
 
 /**
- * Deterministic Live Tree Recalculation Engine
+ * Pure Synchronous Helper for Live 12-Level Tree Metrics
+ * Delegates directly to buildMember12LevelReport in mlmUtils.js
  */
 export function calculateMemberTreeMetrics(member, allUsers = {}, levelRates = null, selfRate = 0) {
-  return buildMember12LevelReport(member, allUsers);
+  return buildMember12LevelReport(member, allUsers, levelRates);
 }
 
 /**
- * 1-Click Recalculate & Fix All Member Balances in Firebase Realtime Database
- * Fixes any ₹0, NaN, or mismatch across all members in /users
+ * 1-Click Recalculate & Fix All Member Commission Balances in Firebase RTDB
  */
 export async function syncAndFixAllMemberBalances() {
   const usersSnap = await get(ref(db, 'users'));
-  if (!usersSnap.exists()) return { success: false, message: 'No users found', updatedCount: 0 };
+  if (!usersSnap.exists()) {
+    return { updatedCount: 0, message: 'No users found in database.' };
+  }
 
   const allUsers = usersSnap.val();
+  const rates = await getSavedLevelRates();
   const updates = {};
-  let count = 0;
+  let updatedCount = 0;
 
-  Object.entries(allUsers).forEach(([uid, user]) => {
-    if (!user) return;
-    const report = buildMember12LevelReport(user, allUsers);
+  // Ensure canonical rates are persisted cleanly
+  updates['/settings/levelRates'] = { ...rates };
+  updates['/settings/selfBusinessRate'] = 0;
 
-    const paid = Number(user.commissionPaid || user.paidPayout || user.totalWithdrawn || 0);
-    const unpaid = Math.max(0, report.totalCommission - paid);
-    const newWalletBalance = unpaid;
+  Object.entries(allUsers).forEach(([uid, u]) => {
+    if (!u) return;
+    const report = buildMember12LevelReport({ uid, ...u }, allUsers, rates);
+
+    // Normalize sponsorId to canonical uppercase Member ID if matched
+    const canonicalSponsor = normalizeSponsorId(u, allUsers);
+    if (canonicalSponsor && canonicalSponsor !== 'DIRECT' && canonicalSponsor !== u.sponsorId) {
+      updates[`/users/${uid}/sponsorId`] = canonicalSponsor;
+    }
+
+    // Ensure active status
+    if (u.status !== 'blocked') {
+      updates[`/users/${uid}/status`] = 'active';
+      updates[`/users/${uid}/isApproved`] = true;
+    }
 
     updates[`/users/${uid}/selfBusiness`] = report.selfBusiness;
-    updates[`/users/${uid}/totalBusiness`] = report.selfBusiness; // Sync totalBusiness = selfBusiness (never stale)
-    updates[`/users/${uid}/selfBusinessCommission`] = 0; // STRICTLY 0%
+    updates[`/users/${uid}/packageAmount`] = report.selfBusiness;
+    updates[`/users/${uid}/packageTier`] = report.selfBusiness;
+    updates[`/users/${uid}/selfBusinessCommission`] = 0;
+    updates[`/users/${uid}/directMembersCount`] = report.directMembersCount;
+    updates[`/users/${uid}/directCount`] = report.directMembersCount;
     updates[`/users/${uid}/directBusiness`] = report.directBusiness;
     updates[`/users/${uid}/directTeamBusiness`] = report.directBusiness;
     updates[`/users/${uid}/directCommission`] = report.directCommission;
     updates[`/users/${uid}/directTeamCommission`] = report.directCommission;
+    updates[`/users/${uid}/downlineMembersCount`] = report.downlineMembersCount;
     updates[`/users/${uid}/downlineBusiness`] = report.downlineBusiness;
     updates[`/users/${uid}/downlineCommission`] = report.downlineCommission;
+    updates[`/users/${uid}/teamCount`] = report.totalTeamMembers;
     updates[`/users/${uid}/teamBusiness`] = report.totalTeamBusiness;
     updates[`/users/${uid}/totalCommission`] = report.totalCommission;
     updates[`/users/${uid}/totalEarned`] = report.totalCommission;
-    updates[`/users/${uid}/commissionPaid`] = paid;
-    updates[`/users/${uid}/paidPayout`] = paid;
-    updates[`/users/${uid}/commissionUnpaid`] = unpaid;
-    updates[`/users/${uid}/unpaidPayout`] = unpaid;
-    updates[`/users/${uid}/commissionStatus`] = unpaid <= 0 && report.totalCommission > 0 ? 'Paid' : (paid > 0 ? 'Partial' : 'Unpaid');
-    updates[`/users/${uid}/walletBalance`] = newWalletBalance;
-    updates[`/users/${uid}/lastRecalculatedAt`] = new Date().toISOString();
+    updates[`/users/${uid}/commissionPaid`] = report.paidPayout;
+    updates[`/users/${uid}/commissionUnpaid`] = report.unpaidPayout;
+    updates[`/users/${uid}/walletBalance`] = report.unpaidPayout;
+    updates[`/users/${uid}/commissionStatus`] =
+      report.unpaidPayout <= 0 && report.paidPayout > 0 && report.totalCommission > 0
+        ? 'Paid'
+        : report.paidPayout > 0
+        ? 'Partial'
+        : 'Unpaid';
 
-    if (user.status !== 'blocked') {
-      updates[`/users/${uid}/status`] = 'active';
-      updates[`/users/${uid}/isApproved`] = true;
-      updates[`/users/${uid}/paymentVerified`] = true;
-      updates[`/users/${uid}/kycVerified`] = true;
-    }
-
-    const normalizedSp = normalizeSponsorId(user, allUsers);
-    if (normalizedSp && normalizedSp !== user.sponsorId && normalizedSp !== 'DIRECT') {
-      updates[`/users/${uid}/sponsorId`] = normalizedSp;
-    }
-
-    const tierVal = parseAmount(user) || 500;
-    updates[`/users/${uid}/packageTier`] = tierVal;
-    updates[`/users/${uid}/packageAmount`] = tierVal;
-
-    count++;
+    updatedCount++;
   });
-
-  // Ensure canonical rates are persisted in settings
-  updates['/settings/levelRates'] = { ...DEFAULT_LEVEL_RATES };
-  updates['/settings/selfBusinessRate'] = 0;
 
   if (Object.keys(updates).length > 0) {
     await update(ref(db), updates);
   }
 
   return {
-    success: true,
-    updatedCount: count,
-    message: `Successfully recalculated and synchronized balances for ${count} members!`
+    updatedCount,
+    message: `Successfully recalculated & synced ${updatedCount} member balances (12-Level 50% Pool, 0% Self Commission).`
   };
 }
 
-export const autoMigrateAndRecalculateUsers = syncAndFixAllMemberBalances;
+/**
+ * Clean & Reset All Software Test Data in Firebase RTDB
+ */
+export async function cleanAndResetTestData() {
+  const updates = {};
+  updates['/users'] = null;
+  updates['/payment_requests'] = null;
+  updates['/withdrawals'] = null;
+  updates['/daily_closings'] = null;
+  updates['/closings'] = null;
+  updates['/transactions'] = null;
+  updates['/payout_records'] = null;
+
+  updates['/settings/levelRates'] = { ...DEFAULT_LEVEL_RATES };
+  updates['/settings/selfBusinessRate'] = 0;
+
+  const rootUid = 'root_sponsor_ucwf_0001';
+  updates[`/users/${rootUid}`] = {
+    uid: rootUid,
+    memberId: 'UCWF-0001',
+    salutation: 'डॉ.',
+    name: 'राजेन्द्र सिंह सैनी',
+    displayName: 'डॉ. राजेन्द्र सिंह सैनी',
+    email: 'uttamcharitablewelfarefoundati@gmail.com',
+    phone: '9540648402',
+    sponsorId: 'DIRECT',
+    role: 'admin',
+    designation: 'संस्थापक / राष्ट्रीय अध्यक्ष',
+    padNaam: 'संस्थापक / राष्ट्रीय अध्यक्ष',
+    packageAmount: 11000,
+    packageTier: 11000,
+    selfBusiness: 11000,
+    walletBalance: 0,
+    totalCommission: 0,
+    commissionPaid: 0,
+    commissionUnpaid: 0,
+    status: 'active',
+    isApproved: true,
+    createdAt: new Date().toISOString(),
+    timestamp: Date.now()
+  };
+
+  await update(ref(db), updates);
+  return true;
+}
 
 export default {
-  LOCKED_12_LEVEL_RATES,
+  DEFAULT_LEVEL_RATES,
+  normalizeLevelRates,
   getSavedLevelRates,
-  saveLevelRates,
   getSavedSelfBusinessRate,
   saveSelfBusinessRate,
+  saveLevelRates,
   getUplineChain,
   distributeManualCommission,
   distribute12LevelCommission,
   calculateMemberTreeMetrics,
-  buildMember12LevelReport,
   syncAndFixAllMemberBalances,
-  autoMigrateAndRecalculateUsers
+  cleanAndResetTestData
 };

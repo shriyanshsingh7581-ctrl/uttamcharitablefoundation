@@ -30,6 +30,7 @@ import {
 import { rtdb } from '../lib/firebase';
 import { ref, onValue } from 'firebase/database';
 import { FOUNDATION_DETAILS, PACKAGES, formatINR, safeText } from '../lib/constants';
+import { parseAmount } from '../utils/mlmUtils';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useDiwaliTheme } from '../contexts/DiwaliThemeContext';
@@ -92,16 +93,29 @@ export default function Home() {
 
   useEffect(() => {
     const onErr = (err) => console.warn('Home RTDB listener notice:', err);
+    let usersVolume = 0;
+    let paymentsVolume = 0;
 
-    // 1. Members count
+    // 1. Members count & aggregate package volume
     const usersRef = ref(rtdb, 'users');
     const unsubscribeUsers = onValue(usersRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.val();
-        const count = Object.keys(data).length;
-        setStats(prev => ({ ...prev, totalMembers: count }));
+        const entries = Object.values(data).filter(Boolean);
+        const count = entries.length;
+        usersVolume = entries.reduce((sum, u) => sum + parseAmount(u), 0);
+        setStats(prev => ({
+          ...prev,
+          totalMembers: count,
+          totalFundsRaised: Math.max(usersVolume, paymentsVolume)
+        }));
       } else {
-        setStats(prev => ({ ...prev, totalMembers: 0 }));
+        usersVolume = 0;
+        setStats(prev => ({
+          ...prev,
+          totalMembers: 0,
+          totalFundsRaised: paymentsVolume
+        }));
       }
     }, onErr);
 
@@ -116,9 +130,17 @@ export default function Home() {
             total += Number(p.amount || 0);
           }
         });
-        setStats(prev => ({ ...prev, totalFundsRaised: total }));
+        paymentsVolume = total;
+        setStats(prev => ({
+          ...prev,
+          totalFundsRaised: Math.max(usersVolume, paymentsVolume)
+        }));
       } else {
-        setStats(prev => ({ ...prev, totalFundsRaised: 0 }));
+        paymentsVolume = 0;
+        setStats(prev => ({
+          ...prev,
+          totalFundsRaised: usersVolume
+        }));
       }
     }, onErr);
 
