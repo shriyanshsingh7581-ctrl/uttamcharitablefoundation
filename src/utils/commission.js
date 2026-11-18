@@ -118,7 +118,8 @@ export async function getUplineChain(startSponsorIdOrUid) {
 export async function distributeManualCommission({
   sourceMember,
   packageAmount,
-  manualDistributions = []
+  manualDistributions = [],
+  isAuto = false
 }) {
   const pkgAmount = round2(parseAmount(packageAmount));
   if (!pkgAmount || pkgAmount <= 0) {
@@ -236,6 +237,7 @@ export async function distributeManualCommission({
       sourceUserId: sourceMember?.uid || '',
       sourceMemberId: sourceMember?.memberId || 'N/A',
       sourceMemberName: getMemberFullName(sourceMember, 'सदस्य'),
+      amount: pkgAmount,
       packageAmount: pkgAmount,
       directCommission: directCommissionPaid,
       downlineCommission: downlineCommissionPaid,
@@ -243,6 +245,7 @@ export async function distributeManualCommission({
       trustShare,
       levelsCount: distributedRecords.length,
       distributions: distributedRecords,
+      autoDistributed: Boolean(isAuto),
       createdAt: nowIso,
       timestamp: nowMs
     };
@@ -268,7 +271,7 @@ export async function distributeManualCommission({
 /**
  * Automatically Distribute 12-Level Generation Commission on Registration / Activation
  */
-export async function distribute12LevelCommission(memberUidOrId, packageAmount) {
+export async function distribute12LevelCommission(memberUidOrId, packageAmount, options = {}) {
   try {
     const usersSnap = await get(ref(db, 'users'));
     if (!usersSnap.exists()) return { totalDistributed: 0, count: 0 };
@@ -291,6 +294,26 @@ export async function distribute12LevelCommission(memberUidOrId, packageAmount) 
     if (!sourceMember) return { totalDistributed: 0, count: 0 };
 
     const pkg = round2(parseAmount(packageAmount || sourceMember));
+
+    if (!options.force) {
+      const payoutsSnap = await get(ref(db, 'payout_records'));
+      if (payoutsSnap.exists()) {
+        const existingPayouts = Object.values(payoutsSnap.val() || {});
+        const alreadyDistributed = existingPayouts.some(
+          (rec) =>
+            rec &&
+            (rec.sourceUserId === sourceMember.uid ||
+              (sourceMember.memberId && normId(rec.sourceMemberId) === normId(sourceMember.memberId))) &&
+            round2(rec.packageAmount || rec.amount) === pkg &&
+            rec.autoDistributed === true
+        );
+        if (alreadyDistributed) {
+          await syncAndFixAllMemberBalances();
+          return { totalDistributed: 0, count: 0, skippedDuplicate: true };
+        }
+      }
+    }
+
     const chain = getUplineChainFromMap(sourceMember, allUsers, rates);
 
     const distributions = chain.map(node => ({
@@ -300,11 +323,15 @@ export async function distribute12LevelCommission(memberUidOrId, packageAmount) 
       amount: round2((pkg * node.rate) / 100)
     }));
 
-    return await distributeManualCommission({
+    const result = await distributeManualCommission({
       sourceMember,
       packageAmount: pkg,
-      manualDistributions: distributions
+      manualDistributions: distributions,
+      isAuto: true
     });
+
+    await syncAndFixAllMemberBalances();
+    return result;
   } catch (err) {
     console.error('distribute12LevelCommission error:', err);
     return { totalDistributed: 0, count: 0 };

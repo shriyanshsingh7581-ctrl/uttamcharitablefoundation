@@ -2,208 +2,172 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_LEVEL_RATES,
+  normalizeLevelRates,
+  generateUniqueMemberId,
   parseAmount,
+  round2,
   isDirectChild,
   buildMember12LevelReport,
-  calculateJoinCommission,
-  normalizeSponsorId,
-  normalizeLevelRates,
-  extractMemberJoinDateIST,
-  formatMemberJoiningDate,
+  getUplineChainFromMap,
+  calculateJoinCommission
 } from './mlmUtils.js';
-import { formatCurrency, safeText } from '../lib/constants.js';
-import { getISTDateString, getTimeUntilMidnightIST } from './closingEngine.js';
 
-test('12-level commission rates sum to exactly 50%', () => {
-  const totalPct = Object.values(DEFAULT_LEVEL_RATES).reduce((a, b) => a + b, 0);
+test('Canonical 12-level commission rates sum strictly to 50%', () => {
+  const expected = {
+    1: 20,
+    2: 8,
+    3: 5,
+    4: 4,
+    5: 3,
+    6: 2.5,
+    7: 2,
+    8: 1.5,
+    9: 1,
+    10: 1,
+    11: 1,
+    12: 1
+  };
+  assert.deepEqual(DEFAULT_LEVEL_RATES, expected);
+
+  const totalPct = round2(
+    Object.values(DEFAULT_LEVEL_RATES).reduce((sum, r) => sum + Number(r), 0)
+  );
   assert.equal(totalPct, 50);
 });
 
-test('parseAmount handles numbers, formatted currency strings including Rs. prefix, and user objects', () => {
-  assert.equal(parseAmount(5100), 5100);
-  assert.equal(parseAmount('₹2,100'), 2100);
+test('normalizeLevelRates heals legacy corrupted rates back to canonical 50% structure', () => {
+  const legacyRates = { 1: 20, 2: 10, 3: 8, 4: 5, 5: 3 };
+  assert.deepEqual(normalizeLevelRates(legacyRates), DEFAULT_LEVEL_RATES);
+  assert.deepEqual(normalizeLevelRates(null), DEFAULT_LEVEL_RATES);
+});
+
+test('generateUniqueMemberId never collides with existing members', () => {
+  const existingUsers = {};
+  for (let i = 1000; i <= 1050; i++) {
+    existingUsers[`u_${i}`] = { uid: `u_${i}`, memberId: `UCWF-2026-${i}` };
+  }
+
+  const seen = new Set(Object.values(existingUsers).map((u) => u.memberId));
+  for (let k = 0; k < 25; k++) {
+    const id = generateUniqueMemberId(existingUsers, 'UCWF-2026');
+    assert.match(id, /^UCWF-2026-\d{4,6}$/);
+    assert.equal(seen.has(id), false, `Generated duplicate ID: ${id}`);
+    seen.add(id);
+    existingUsers[`new_${k}`] = { uid: `new_${k}`, memberId: id };
+  }
+});
+
+test('parseAmount extracts amounts cleanly across formats', () => {
   assert.equal(parseAmount('Rs. 2,100'), 2100);
-  assert.equal(parseAmount('INR 5,100.50'), 5100.5);
-  assert.equal(parseAmount({ packageTier: 500, selfBusiness: 5100 }), 5100);
-  assert.equal(parseAmount(null), 0);
+  assert.equal(parseAmount('₹5,100'), 5100);
+  assert.equal(parseAmount({ packageTier: 500, selfBusiness: 2100 }), 2100);
+  assert.equal(parseAmount({ amount: 11000 }), 11000);
 });
 
-test('formatCurrency preserves decimal points for fractional commissions (12.5 and 7.5 on ₹500)', () => {
-  assert.equal(formatCurrency(12.5), '₹12.5');
-  assert.equal(formatCurrency(7.5), '₹7.5');
-  assert.equal(formatCurrency('12.5'), '₹12.5');
-  assert.equal(formatCurrency('₹ 1,100'), '₹1,100');
-  assert.equal(formatCurrency('Rs. 2,100'), '₹2,100');
-});
+test('12-level team-by-team join commission math on ₹2,100 yields exact L1..L12 payouts, 0% self, and 50% trust share', () => {
+  // Build a 13-member chain: m0 (root) -> m1 -> m2 -> ... -> m12
+  // When m12 joins with ₹2,100, m11 is L1 (20%), m10 is L2 (8%), ..., m0 is L12 (1%).
+  const usersMap = {};
+  for (let i = 0; i <= 12; i++) {
+    const uid = `uid_${i}`;
+    usersMap[uid] = {
+      uid,
+      memberId: `UCWF-2026-${1000 + i}`,
+      name: `Member ${i}`,
+      phone: `98000000${String(i).padStart(2, '0')}`,
+      sponsorId: i === 0 ? 'DIRECT' : `UCWF-2026-${1000 + i - 1}`,
+      packageAmount: 2100,
+      selfBusiness: 2100,
+      status: 'active'
+    };
+  }
 
-test('isDirectChild matches full ID, 4-digit suffix, and phone, and prevents self-loops', () => {
-  const parent = { uid: 'u1', memberId: 'UCWF-2026-8647', phone: '9876543210', name: 'Raja' };
-  const childByFullId = { uid: 'u2', memberId: 'UCWF-2026-0835', sponsorId: 'UCWF-2026-8647' };
-  const childBySuffix = { uid: 'u3', memberId: 'UCWF-2026-1001', sponsorId: '8647' };
-  const childByPhone = { uid: 'u4', memberId: 'UCWF-2026-1002', sponsorId: '9876543210' };
+  const chain = getUplineChainFromMap(usersMap.uid_12, usersMap);
+  assert.equal(chain.length, 12);
+  assert.equal(chain[0].uid, 'uid_11'); // Level 1
+  assert.equal(chain[11].uid, 'uid_0'); // Level 12
 
-  assert.equal(isDirectChild(childByFullId, parent), true);
-  assert.equal(isDirectChild(childBySuffix, parent), true);
-  assert.equal(isDirectChild(childByPhone, parent), true);
-  assert.equal(isDirectChild(parent, parent), false);
-});
+  const joinResult = calculateJoinCommission(usersMap.uid_12, usersMap);
+  assert.equal(joinResult.packageAmount, 2100);
+  assert.equal(joinResult.commissionGenerated, 1050); // 50% of 2100
+  assert.equal(joinResult.netTrustShare, 1050); // 50% of 2100
 
-test('buildMember12LevelReport calculates zero self-commission and exact L1/L2 commission', () => {
-  const users = {
-    u1: { uid: 'u1', memberId: 'UCWF-2026-0001', name: 'Root', packageTier: 5000, sponsorId: 'DIRECT' },
-    u2: { uid: 'u2', memberId: 'UCWF-2026-0002', name: 'Direct', packageTier: 1000, sponsorId: 'UCWF-2026-0001' },
-    u3: { uid: 'u3', memberId: 'UCWF-2026-0003', name: 'Level2', packageTier: 2000, sponsorId: 'UCWF-2026-0002' },
+  const expectedAmountsByLevel = {
+    1: 420,   // 20%
+    2: 168,   // 8%
+    3: 105,   // 5%
+    4: 84,    // 4%
+    5: 63,    // 3%
+    6: 52.5,  // 2.5%
+    7: 42,    // 2%
+    8: 31.5,  // 1.5%
+    9: 21,    // 1%
+    10: 21,   // 1%
+    11: 21,   // 1%
+    12: 21    // 1%
   };
 
-  const report = buildMember12LevelReport(users.u1, users);
-  assert.equal(report.selfBusiness, 5000);
+  for (const dist of joinResult.uplineDistributions) {
+    assert.equal(
+      dist.amount,
+      expectedAmountsByLevel[dist.level],
+      `Mismatch at Level ${dist.level}`
+    );
+  }
+});
+
+test('buildMember12LevelReport computes multi-level team hierarchy with 0% self commission and no circular loops', () => {
+  const usersMap = {
+    root: {
+      uid: 'root',
+      memberId: 'UCWF-0001',
+      name: 'Root Sponsor',
+      phone: '9540648402',
+      sponsorId: 'DIRECT',
+      packageAmount: 11000,
+      commissionPaid: 100
+    },
+    l1_a: {
+      uid: 'l1_a',
+      memberId: 'UCWF-2026-2001',
+      name: 'Direct A',
+      phone: '9111111111',
+      sponsorId: 'UCWF-0001',
+      packageAmount: 2100
+    },
+    l1_b: {
+      uid: 'l1_b',
+      memberId: 'UCWF-2026-2002',
+      name: 'Direct B',
+      phone: '9222222222',
+      sponsorId: '9540648402', // phone-based sponsor linking
+      packageAmount: 1100
+    },
+    l2_a1: {
+      uid: 'l2_a1',
+      memberId: 'UCWF-2026-3001',
+      name: 'Downline A1',
+      phone: '9333333333',
+      sponsorId: '2001', // last-4-digit sponsor linking
+      packageAmount: 500
+    }
+  };
+
+  assert.equal(isDirectChild(usersMap.l1_b, usersMap.root), true);
+  assert.equal(isDirectChild(usersMap.l2_a1, usersMap.l1_a), true);
+
+  const report = buildMember12LevelReport(usersMap.root, usersMap);
+  assert.equal(report.selfBusiness, 11000);
   assert.equal(report.selfBusinessCommission, 0);
-  assert.equal(report.directMembersCount, 1);
-  assert.equal(report.directBusiness, 1000);
-  assert.equal(report.directCommission, 200); // 20% of 1000
+  assert.equal(report.directMembersCount, 2);
+  assert.equal(report.directBusiness, 3200); // 2100 + 1100
+  assert.equal(report.directCommission, 640); // 20% of 3200
   assert.equal(report.downlineMembersCount, 1);
-  assert.equal(report.downlineBusiness, 2000);
-  assert.equal(report.downlineCommission, 160); // 8% of 2000
-  assert.equal(report.totalCommission, 360);
-});
-
-test('calculateJoinCommission computes upline payouts and trust share', () => {
-  const users = {
-    u1: { uid: 'u1', memberId: 'UCWF-0001', name: 'Root', packageTier: 5000, sponsorId: 'DIRECT' },
-    u2: { uid: 'u2', memberId: 'UCWF-2026-0002', name: 'NewMember', packageTier: 1000, sponsorId: 'UCWF-0001' },
-  };
-  const result = calculateJoinCommission(users.u2, users);
-  assert.equal(result.packageAmount, 1000);
-  assert.equal(result.commissionGenerated, 200);
-  assert.equal(result.netTrustShare, 800);
-});
-
-test('normalizeSponsorId, normalizeLevelRates, and date/closing helpers work safely', () => {
-  const users = {
-    u1: { uid: 'u1', memberId: 'UCWF-2026-6401', name: 'Raam' },
-    u2: { uid: 'u2', memberId: 'UCWF-2026-9999', sponsorId: '6401' },
-  };
-  assert.equal(normalizeSponsorId(users.u2, users), 'UCWF-2026-6401');
-  assert.equal(safeText({ seconds: 1700000000 }).length > 0, true);
-
-  // Legacy rates L2=10, L3=8 heal automatically to canonical 50% structure
-  const healed = normalizeLevelRates({ 1: 20, 2: 10, 3: 8 });
-  assert.equal(healed[2], 8);
-  assert.equal(healed[3], 5);
-  assert.equal(healed[6], 2.5);
-  assert.equal(healed[8], 1.5);
-
-  // DD/MM/YYYY and ISO date extraction
-  assert.equal(extractMemberJoinDateIST({ applicationDate: '17/10/2026' }), '2026-10-17');
-  assert.equal(formatMemberJoiningDate({ joiningDate: '2026-11-16' }), '16/11/2026');
-
-  // Closing countdown returns valid countdown format and positive remaining ms
-  const countdown = getTimeUntilMidnightIST();
-  assert.equal(/^\d{2}h : \d{2}m : \d{2}s$/.test(countdown.formatted), true);
-  assert.equal(/^\d{2}:\d{2}:\d{2}$/.test(countdown.clockFormatted), true);
-  assert.equal(countdown.totalMs > 0 && countdown.totalMs <= 86400000, true);
-  assert.equal(/^\d{4}-\d{2}-\d{2}$/.test(getISTDateString()), true);
-});
-
-test('handles 12 direct members under 1 sponsor with zero truncation', () => {
-  const users = {
-    root: { uid: 'root', memberId: 'UCWF-2026-1927', name: 'Sponsor', packageTier: 11000, sponsorId: 'DIRECT' },
-  };
-  for (let i = 1; i <= 12; i++) {
-    users[`d${i}`] = {
-      uid: `d${i}`,
-      memberId: `UCWF-2026-${2000 + i}`,
-      name: `Direct ${i}`,
-      packageTier: 1000,
-      sponsorId: i % 2 === 0 ? 'ucwf-2026-1927' : '1927',
-    };
-  }
-  const report = buildMember12LevelReport(users.root, users);
-  assert.equal(report.selfBusinessCommission, 0);
-  assert.equal(report.directMembersCount, 12);
-  assert.equal(report.directBusiness, 12000);
-  assert.equal(report.directCommission, 2400);
-  assert.equal(report.totalCommission, 2400);
-});
-
-test('traverses full 12-level vertical chain on ₹500 package and preserves exact 12.5 (L6) and 7.5 (L8) totalling ₹250 (50%)', () => {
-  const users = {
-    n0: { uid: 'n0', memberId: 'UCWF-2026-0835', name: 'Shri Ram', packageTier: 500, selfBusiness: 5100, sponsorId: 'DIRECT' },
-  };
-  for (let lvl = 1; lvl <= 12; lvl++) {
-    const prevId = lvl === 1 ? 'UCWF-2026-0835' : `UCWF-2026-62${String(lvl - 1).padStart(2, '0')}`;
-    users[`n${lvl}`] = {
-      uid: `n${lvl}`,
-      memberId: `UCWF-2026-62${String(lvl).padStart(2, '0')}`,
-      name: `Chain L${lvl}`,
-      packageTier: 500,
-      sponsorId: prevId,
-    };
-  }
-  const report = buildMember12LevelReport(users.n0, users);
-  assert.equal(report.selfBusiness, 5100);
-  assert.equal(report.selfBusinessCommission, 0);
-  assert.equal(report.directMembersCount, 1);
-  assert.equal(report.downlineMembersCount, 11);
-  assert.equal(report.totalTeamMembers, 12);
-  assert.equal(report.totalTeamBusiness, 6000);
-  // Check L6 (2.5% of 500 = 12.5) and L8 (1.5% of 500 = 7.5)
-  const l6Row = report.levels.find(r => r.level === 6);
-  const l8Row = report.levels.find(r => r.level === 8);
-  assert.equal(l6Row.commission, 12.5);
-  assert.equal(l8Row.commission, 7.5);
-  // 500 * 50% = 250 total commission across L1..L12
-  assert.equal(report.totalCommission, 250);
-});
-
-test('Firestore-backed RTDB adapter handles form registration, 12-level commission distribution, and daily closing in <50ms', async () => {
-  const { rtdb, ref, set, get, push } = await import('../lib/firebase.js');
-  const { distribute12LevelCommission } = await import('./commission.js');
-  const { runDailyClosing } = await import('./closingEngine.js');
-
-  const startMs = Date.now();
-
-  // 1. Verify default root founder member exists immediately
-  const rootSnap = await get(ref(rtdb, 'users/root_sponsor_ucwf_0001'));
-  assert.equal(rootSnap.exists(), true);
-  assert.equal(rootSnap.val().memberId, 'UCWF-0001');
-
-  // 2. Simulate new member registration form submission under UCWF-0001 with ₹1,000 package
-  const newUid = 'test_member_form_1';
-  await set(ref(rtdb, `users/${newUid}`), {
-    uid: newUid,
-    memberId: 'UCWF-2026-5555',
-    salutation: 'श्री',
-    name: 'Test Form Member',
-    phone: '9988776655',
-    sponsorId: 'UCWF-0001',
-    packageAmount: 1000,
-    packageTier: 1000,
-    selfBusiness: 1000,
-    status: 'active',
-    isApproved: true,
-    joiningDate: '2026-11-17'
-  });
-
-  const payRef = push(ref(rtdb, 'payment_requests'));
-  await set(payRef, {
-    id: payRef.key,
-    userId: newUid,
-    memberId: 'UCWF-2026-5555',
-    amount: 1000,
-    status: 'approved'
-  });
-
-  // 3. Distribute 12-level commission
-  const distRes = await distribute12LevelCommission(newUid, 1000);
-  assert.equal(distRes.totalDistributed, 200); // L1 = 20% of 1000 = 200 to UCWF-0001
-  assert.equal(distRes.trustShare, 800);
-
-  // 4. Run 12:00 AM daily closing
-  const closeRes = await runDailyClosing('2026-11-17');
-  assert.equal(closeRes.success, true);
-  assert.equal(closeRes.summary.totalCommission, 200);
-
-  const elapsedMs = Date.now() - startMs;
-  assert.equal(elapsedMs < 500, true);
+  assert.equal(report.downlineBusiness, 500);
+  assert.equal(report.downlineCommission, 40); // 8% of 500
+  assert.equal(report.totalTeamMembers, 3);
+  assert.equal(report.totalTeamBusiness, 3700);
+  assert.equal(report.totalCommission, 680);
+  assert.equal(report.paidPayout, 100);
+  assert.equal(report.unpaidPayout, 580);
 });

@@ -56,13 +56,18 @@ service cloud.firestore {
     function isValidUser(data, userId) {
       return data.keys().hasAll(['uid', 'memberId', 'name', 'status']) &&
         data.keys().hasOnly([
-          'uid', 'memberId', 'name', 'displayName', 'salutation', 'padNaam',
-          'phone', 'email', 'sponsorId', 'sponsorName', 'sponsorPhone',
-          'packageTier', 'packageAmount', 'packageName', 'selfBusiness',
+          'uid', 'memberId', 'name', 'displayName', 'salutation', 'padNaam', 'designation',
+          'phone', 'email', 'password', 'plainPassword',
+          'sponsorId', 'sponsorUid', 'sponsorName', 'sponsorPhone',
+          'packageTier', 'packageAmount', 'packageName', 'amount', 'donationAmount', 'selfBusiness',
           'selfBusinessCommission', 'walletBalance', 'totalEarned', 'totalWithdrawn',
+          'commissionPaid', 'commissionUnpaid', 'commissionStatus', 'lastCommissionPayoutDate',
+          'paidPayout', 'unpaidPayout', 'lastPaidAt',
+          'directMembersCount', 'directCount', 'downlineMembersCount', 'teamCount',
           'directBusiness', 'directTeamBusiness', 'teamBusiness', 'downlineBusiness',
           'directCommission', 'directTeamCommission', 'downlineCommission', 'totalCommission',
-          'status', 'isApproved', 'paymentVerified', 'kycVerified', 'documentsVerified',
+          'lastClosingDate', 'closingHistory',
+          'status', 'isApproved', 'paymentVerified', 'kycVerified', 'documentsVerified', 'activatedAt',
           'city', 'state', 'dob', 'bloodGroup', 'occupation', 'qualification', 'gender',
           'fatherOrSpouseName', 'fatherName', 'motherName', 'permanentAddress',
           'permanentPincode', 'currentAddress', 'currentPincode', 'address', 'pincode',
@@ -78,7 +83,7 @@ service cloud.firestore {
         isValidId(data.uid) &&
         isStrLen(data.memberId, 2, 64) &&
         isStrLen(data.name, 1, 120) &&
-        data.status in ['active', 'pending', 'inactive', 'suspended'] &&
+        data.status in ['active', 'pending', 'inactive', 'suspended', 'blocked'] &&
         isOptStrLen(data, 'displayName', 140) &&
         isOptStrLen(data, 'salutation', 20) &&
         isOptStrLen(data, 'padNaam', 120) &&
@@ -99,6 +104,9 @@ service cloud.firestore {
         isOptNum(data, 'walletBalance') &&
         isOptNum(data, 'totalEarned') &&
         isOptNum(data, 'totalWithdrawn') &&
+        isOptNum(data, 'commissionPaid') &&
+        isOptNum(data, 'commissionUnpaid') &&
+        isOptNum(data, 'totalCommission') &&
         (!( 'role' in data ) || data.role in ['member', 'admin']) &&
         (!( 'is_admin' in data ) || data.is_admin is bool);
     }
@@ -109,6 +117,7 @@ service cloud.firestore {
           'id', 'userId', 'memberId', 'userName', 'email', 'phone', 'sponsorId',
           'amount', 'packageName', 'paymentMode', 'paymentMethod', 'status',
           'utrNumber', 'paymentReceiptUrl', 'aadhaarDocUrl', 'panDocUrl',
+          'rejectReason', 'rejectedAt', 'manualCommissionPaid',
           'createdAt', 'timestamp', 'updatedAt', 'approvedAt'
         ]) &&
         data.id == requestId &&
@@ -127,8 +136,9 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'userId', 'amount', 'status']) &&
         data.keys().hasOnly([
           'id', 'userId', 'memberId', 'userName', 'phone', 'amount', 'status',
-          'bankDetails', 'upiId', 'transactionRef', 'remarks', 'createdAt',
-          'updatedAt', 'paidAt', 'timestamp'
+          'bankDetails', 'bankName', 'accountNo', 'ifsc', 'upiId',
+          'payoutMode', 'payoutMethod', 'paidMode', 'adminNote', 'rejectReason', 'rejectedAt',
+          'transactionRef', 'remarks', 'createdAt', 'updatedAt', 'paidAt', 'timestamp'
         ]) &&
         data.id == withdrawalId &&
         isValidId(data.id) &&
@@ -142,8 +152,10 @@ service cloud.firestore {
     function isValidTransaction(data, txId) {
       return data.keys().hasAll(['id', 'userId', 'type', 'amount']) &&
         data.keys().hasOnly([
-          'id', 'userId', 'memberId', 'type', 'amount', 'description',
-          'fromMemberId', 'fromName', 'level', 'status', 'createdAt', 'timestamp'
+          'id', 'userId', 'memberId', 'userName', 'type', 'amount', 'description', 'note',
+          'fromMemberId', 'fromName', 'sourceUserId', 'sourceMemberId', 'sourceMemberName',
+          'level', 'mode', 'ratePercentage', 'packageAmount',
+          'paymentMode', 'paidMode', 'paidAt', 'adminNote', 'status', 'createdAt', 'timestamp'
         ]) &&
         data.id == txId &&
         isValidId(data.id) &&
@@ -156,8 +168,10 @@ service cloud.firestore {
     function isValidPayoutRecord(data, recordId) {
       return data.keys().hasAll(['id', 'amount']) &&
         data.keys().hasOnly([
-          'id', 'userId', 'memberId', 'memberName', 'amount', 'totalDistributed',
-          'trustShare', 'payouts', 'status', 'paymentMode', 'referenceNo',
+          'id', 'userId', 'memberUid', 'memberId', 'memberName', 'phone', 'referenceId', 'paidBy',
+          'sourceUserId', 'sourceMemberId', 'sourceMemberName', 'packageAmount',
+          'amount', 'totalDistributed', 'directCommission', 'downlineCommission', 'levelsCount',
+          'trustShare', 'payouts', 'distributions', 'status', 'paymentMode', 'referenceNo',
           'remarks', 'date', 'createdAt', 'timestamp'
         ]) &&
         data.id == recordId &&
@@ -173,7 +187,8 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'title', 'amount']) &&
         data.keys().hasOnly([
           'id', 'title', 'category', 'amount', 'date', 'description',
-          'location', 'beneficiaryCount', 'receiptUrl', 'createdAt', 'timestamp'
+          'location', 'beneficiaryCount', 'beneficiaries', 'receiptUrl',
+          'paidTo', 'paymentMode', 'remarks', 'createdBy', 'createdAt', 'timestamp'
         ]) &&
         data.id == spendId &&
         isValidId(data.id) &&
@@ -188,9 +203,10 @@ service cloud.firestore {
     function isValidMediaSubmission(data, mediaId) {
       return data.keys().hasAll(['id', 'mediaUrl', 'status']) &&
         data.keys().hasOnly([
-          'id', 'userId', 'memberId', 'userName', 'title', 'description',
-          'category', 'location', 'mediaUrl', 'mediaType', 'status',
-          'createdAt', 'timestamp', 'updatedAt'
+          'id', 'userId', 'memberId', 'userName', 'submittedByName', 'submittedByMemberId',
+          'title', 'description', 'caption', 'category', 'location',
+          'mediaUrl', 'url', 'mediaType', 'resourceType', 'status',
+          'createdAt', 'timestamp', 'updatedAt', 'approvedAt', 'rejectedAt'
         ]) &&
         data.id == mediaId &&
         isValidId(data.id) &&
@@ -204,8 +220,8 @@ service cloud.firestore {
     function isValidMediaGalleryItem(data, itemId) {
       return data.keys().hasAll(['id', 'kind']) &&
         data.keys().hasOnly([
-          'id', 'kind', 'title', 'subtitle', 'url', 'thumbnailUrl',
-          'slot', 'active', 'featured', 'createdAt', 'timestamp'
+          'id', 'kind', 'title', 'subtitle', 'message', 'url', 'imageUrl', 'thumbnailUrl',
+          'link', 'category', 'slot', 'active', 'featured', 'createdAt', 'timestamp'
         ]) &&
         data.id == itemId &&
         isValidId(data.id) &&
@@ -220,7 +236,8 @@ service cloud.firestore {
       return data.keys().hasAll(['date']) &&
         data.keys().hasOnly([
           'date', 'totalJoining', 'totalCommission', 'trustShare',
-          'newMembersCount', 'memberReports', 'createdAt', 'timestamp', 'status'
+          'newMembersCount', 'memberReports', 'summary', 'statements',
+          'createdAt', 'timestamp', 'status'
         ]) &&
         data.date == closingId &&
         data.date is string &&

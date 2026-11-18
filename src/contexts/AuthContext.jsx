@@ -16,6 +16,7 @@ import {
   off,
 } from '../lib/firebase';
 import { safeText } from '../lib/constants';
+import { generateUniqueMemberId, normId } from '../utils/mlmUtils';
 
 const AuthContext = createContext(null);
 
@@ -274,17 +275,35 @@ export const AuthProvider = ({ children }) => {
     const name = (data.name || '').trim();
     const email = (data.email || (cleanPhone ? `${cleanPhone}@ucwf.online` : '')).trim().toLowerCase();
     const password = (data.password || cleanPhone || 'UCWF@1234').trim();
-    const memberId = (data.memberId || generateMemberId()).trim().toUpperCase();
     const createdAt = getReadableDate();
-
     const newUid = data.uid || ('member_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
 
+    let allUsers = {};
+    try {
+      const existingSnap = await get(ref(db, 'users'));
+      if (existingSnap.exists()) {
+        allUsers = existingSnap.val() || {};
+      }
+    } catch {}
+
+    let memberId = (data.memberId || '').trim().toUpperCase();
+    const collides =
+      memberId &&
+      Object.entries(allUsers).some(([uKey, uVal]) => uKey !== newUid && normId(uVal?.memberId) === memberId);
+    if (!memberId || collides) {
+      memberId = generateUniqueMemberId(allUsers);
+    }
+
+    const resolvedPackageAmt = Number(data.packageAmount || data.packageTier || data.selfBusiness || 500);
+    const resolvedSponsorId = data.sponsorId ? String(data.sponsorId).trim().toUpperCase() : 'DIRECT';
+
     const newMemberData = {
+      ...data,
       uid: newUid,
       memberId: memberId,
       salutation: salutation,
       name: name,
-      displayName: `${salutation} ${name}`.trim(),
+      displayName: data.displayName || `${salutation} ${name}`.trim(),
       padNaam: data.padNaam || 'कार्यकारिणी सदस्य',
       fatherOrSpouseName: data.fatherOrSpouseName || data.fatherName || '',
       aadhaarNumber: data.aadhaarNumber || '',
@@ -304,20 +323,20 @@ export const AuthProvider = ({ children }) => {
       occupation: data.occupation || '',
       qualification: data.qualification || '',
       gender: data.gender || 'पुरुष',
-      sponsorId: data.sponsorId ? data.sponsorId.trim().toUpperCase() : 'DIRECT',
-      packageTier: Number(data.packageTier || data.packageAmount || 500),
-      packageAmount: Number(data.packageAmount || data.packageTier || 500),
-      packageName: data.packageName || `सहयोग संकल्प (₹${data.packageAmount || 500})`,
+      sponsorId: resolvedSponsorId,
+      packageTier: resolvedPackageAmt,
+      packageAmount: resolvedPackageAmt,
+      packageName: data.packageName || `सहयोग संकल्प (₹${resolvedPackageAmt})`,
       photoUrl: data.photoUrl || '',
       signatureUrl: data.signatureUrl || '',
       aadhaarDocUrl: data.aadhaarDocUrl || '',
       declarationAccepted: data.declarationAccepted !== false,
       applicationDate: data.applicationDate || createdAt,
-      status: 'active',
-      isApproved: true,
-      paymentVerified: true,
-      kycVerified: true,
-      selfBusiness: Number(data.packageAmount || data.packageTier || 500),
+      status: data.status || 'active',
+      isApproved: data.isApproved !== false,
+      paymentVerified: data.paymentVerified !== false,
+      kycVerified: data.kycVerified !== false,
+      selfBusiness: resolvedPackageAmt,
       selfBusinessCommission: 0, // STRICTLY ZERO COMMISSION ON OWN DONATION / FORM
       walletBalance: Number(data.walletBalance || 0),
       totalEarned: Number(data.totalEarned || 0),
@@ -329,9 +348,8 @@ export const AuthProvider = ({ children }) => {
         ifscCode: '',
         accountHolder: '',
       },
-      createdAt: createdAt,
-      timestamp: Date.now(),
-      ...data,
+      createdAt: data.createdAt || createdAt,
+      timestamp: data.timestamp || Date.now(),
     };
 
     // Save directly to Firebase Database Adapter
@@ -565,7 +583,12 @@ export const AuthProvider = ({ children }) => {
 
     if (!snap.exists()) {
       const defaultPassword = 'UCWF@1234';
-      const memberId = generateMemberId();
+      let allUsers = {};
+      try {
+        const allSnap = await get(ref(db, 'users'));
+        if (allSnap.exists()) allUsers = allSnap.val() || {};
+      } catch {}
+      const memberId = generateUniqueMemberId(allUsers);
       const createdAt = getReadableDate();
 
       const newGoogleMember = {

@@ -22,6 +22,7 @@ import { ref, onValue, push, set } from 'firebase/database';
 import { formatINR, safeText } from '../lib/constants';
 import { distribute12LevelCommission } from '../utils/commission';
 import { getMemberFullName, formatMemberJoiningDate } from '../utils/mlmUtils';
+import SponsorSelector from './SponsorSelector';
 
 const PRESET_AMOUNTS = [500, 1100, 2100, 5100, 11000];
 
@@ -61,13 +62,14 @@ export default function NewJoiningSection({
   const [copiedId, setCopiedId] = useState(false);
   const [copiedPass, setCopiedPass] = useState(false);
 
-  // Sync sponsorId once authenticated member hydrates
+  // Sync sponsorId whenever explicit defaultSponsorId changes or member hydrates
   useEffect(() => {
-    const resolved = (defaultSponsorId && defaultSponsorId !== 'UCWF-2026-MEMBER')
-      ? defaultSponsorId
-      : (currentMemId && currentMemId !== 'UCWF-2026-MEMBER' ? currentMemId : '');
-    if (resolved && (!sponsorId || sponsorId === 'UCWF-2026-MEMBER')) {
-      setSponsorId(resolved);
+    if (defaultSponsorId && defaultSponsorId !== 'UCWF-2026-MEMBER') {
+      setSponsorId(String(defaultSponsorId).toUpperCase());
+      return;
+    }
+    if (currentMemId && currentMemId !== 'UCWF-2026-MEMBER' && (!sponsorId || sponsorId === 'UCWF-2026-MEMBER')) {
+      setSponsorId(String(currentMemId).toUpperCase());
     }
   }, [defaultSponsorId, currentMemId]);
 
@@ -326,23 +328,13 @@ export default function NewJoiningSection({
             </div>
           )}
 
-          {/* 1. Sponsor ID */}
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-1.5">
-            <label className="block text-xs font-bold text-slate-700">
-              स्पॉन्सर आईडी (Sponsor ID) *
-            </label>
-            <input
-              type="text"
-              value={sponsorId}
-              onChange={(e) => setSponsorId(e.target.value.toUpperCase())}
-              placeholder="UCWF-2026-XXXX या मोबाइल नंबर"
-              required
-              className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-slate-300 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            />
-            <p className="text-[11px] text-slate-500">
-              जिस सदस्य के डायरेक्ट (Level 1) में यह नया सदस्य जुड़ेगा। (डिफ़ॉल्ट: आपकी आईडी)
-            </p>
-          </div>
+          {/* 1. Searchable Sponsor Selector (Team-by-Team Joining) */}
+          <SponsorSelector
+            value={sponsorId}
+            onChange={setSponsorId}
+            usersMap={allUsersMap}
+            label="स्पॉन्सर आईडी चुनें / Sponsor ID (जिस सदस्य के नीचे जोड़ना है) *"
+          />
 
           {/* 2. Donation Amount Selection */}
           <div className="space-y-2">

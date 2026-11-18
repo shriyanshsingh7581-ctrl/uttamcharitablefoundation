@@ -93,13 +93,18 @@ export async function testConnection() {
 // ---------------------------------------------------------------------------
 const COLLECTION_ALLOWED_KEYS = {
   users: new Set([
-    'uid', 'memberId', 'name', 'displayName', 'salutation', 'padNaam',
-    'phone', 'email', 'sponsorId', 'sponsorName', 'sponsorPhone',
-    'packageTier', 'packageAmount', 'packageName', 'selfBusiness',
+    'uid', 'memberId', 'name', 'displayName', 'salutation', 'padNaam', 'designation',
+    'phone', 'email', 'password', 'plainPassword',
+    'sponsorId', 'sponsorUid', 'sponsorName', 'sponsorPhone',
+    'packageTier', 'packageAmount', 'packageName', 'amount', 'donationAmount', 'selfBusiness',
     'selfBusinessCommission', 'walletBalance', 'totalEarned', 'totalWithdrawn',
+    'commissionPaid', 'commissionUnpaid', 'commissionStatus', 'lastCommissionPayoutDate',
+    'paidPayout', 'unpaidPayout', 'lastPaidAt',
+    'directMembersCount', 'directCount', 'downlineMembersCount', 'teamCount',
     'directBusiness', 'directTeamBusiness', 'teamBusiness', 'downlineBusiness',
     'directCommission', 'directTeamCommission', 'downlineCommission', 'totalCommission',
-    'status', 'isApproved', 'paymentVerified', 'kycVerified', 'documentsVerified',
+    'lastClosingDate', 'closingHistory',
+    'status', 'isApproved', 'paymentVerified', 'kycVerified', 'documentsVerified', 'activatedAt',
     'city', 'state', 'dob', 'bloodGroup', 'occupation', 'qualification', 'gender',
     'fatherOrSpouseName', 'fatherName', 'motherName', 'permanentAddress',
     'permanentPincode', 'currentAddress', 'currentPincode', 'address', 'pincode',
@@ -117,40 +122,49 @@ const COLLECTION_ALLOWED_KEYS = {
     'id', 'userId', 'memberId', 'userName', 'email', 'phone', 'sponsorId',
     'amount', 'packageName', 'paymentMode', 'paymentMethod', 'status',
     'utrNumber', 'paymentReceiptUrl', 'aadhaarDocUrl', 'panDocUrl',
+    'rejectReason', 'rejectedAt', 'manualCommissionPaid',
     'createdAt', 'timestamp', 'updatedAt', 'approvedAt',
   ]),
   withdrawals: new Set([
     'id', 'userId', 'memberId', 'userName', 'phone', 'amount', 'status',
-    'bankDetails', 'upiId', 'transactionRef', 'remarks', 'createdAt',
-    'updatedAt', 'paidAt', 'timestamp',
+    'bankDetails', 'bankName', 'accountNo', 'ifsc', 'upiId',
+    'payoutMode', 'payoutMethod', 'paidMode', 'adminNote', 'rejectReason', 'rejectedAt',
+    'transactionRef', 'remarks', 'createdAt', 'updatedAt', 'paidAt', 'timestamp',
   ]),
   transactions: new Set([
-    'id', 'userId', 'memberId', 'type', 'amount', 'description',
-    'fromMemberId', 'fromName', 'level', 'status', 'createdAt', 'timestamp',
+    'id', 'userId', 'memberId', 'userName', 'type', 'amount', 'description', 'note',
+    'fromMemberId', 'fromName', 'sourceUserId', 'sourceMemberId', 'sourceMemberName',
+    'level', 'mode', 'ratePercentage', 'packageAmount',
+    'paymentMode', 'paidMode', 'paidAt', 'adminNote', 'status', 'createdAt', 'timestamp',
   ]),
   payout_records: new Set([
-    'id', 'userId', 'memberId', 'memberName', 'amount', 'totalDistributed',
-    'trustShare', 'payouts', 'status', 'paymentMode', 'referenceNo',
+    'id', 'userId', 'memberUid', 'memberId', 'memberName', 'phone', 'referenceId', 'paidBy',
+    'sourceUserId', 'sourceMemberId', 'sourceMemberName', 'packageAmount',
+    'amount', 'totalDistributed', 'directCommission', 'downlineCommission', 'levelsCount',
+    'trustShare', 'payouts', 'distributions', 'status', 'paymentMode', 'referenceNo',
     'remarks', 'date', 'createdAt', 'timestamp',
   ]),
   payout_logs: null,
   spends: new Set([
     'id', 'title', 'category', 'amount', 'date', 'description',
-    'location', 'beneficiaryCount', 'receiptUrl', 'createdAt', 'timestamp',
+    'location', 'beneficiaryCount', 'beneficiaries', 'receiptUrl',
+    'paidTo', 'paymentMode', 'remarks', 'createdBy', 'createdAt', 'timestamp',
   ]),
   expenses: null,
   media_submissions: new Set([
-    'id', 'userId', 'memberId', 'userName', 'title', 'description',
-    'category', 'location', 'mediaUrl', 'mediaType', 'status',
-    'createdAt', 'timestamp', 'updatedAt',
+    'id', 'userId', 'memberId', 'userName', 'submittedByName', 'submittedByMemberId',
+    'title', 'description', 'caption', 'category', 'location',
+    'mediaUrl', 'url', 'mediaType', 'resourceType', 'status',
+    'createdAt', 'timestamp', 'updatedAt', 'approvedAt', 'rejectedAt',
   ]),
   media_gallery: new Set([
-    'id', 'kind', 'title', 'subtitle', 'url', 'thumbnailUrl',
-    'slot', 'active', 'featured', 'createdAt', 'timestamp',
+    'id', 'kind', 'title', 'subtitle', 'message', 'url', 'imageUrl', 'thumbnailUrl',
+    'link', 'category', 'slot', 'active', 'featured', 'createdAt', 'timestamp',
   ]),
   daily_closings: new Set([
     'date', 'totalJoining', 'totalCommission', 'trustShare',
-    'newMembersCount', 'memberReports', 'createdAt', 'timestamp', 'status',
+    'newMembersCount', 'memberReports', 'summary', 'statements',
+    'createdAt', 'timestamp', 'status',
   ]),
   events: new Set([
     'id', 'title', 'description', 'date', 'location', 'imageUrl',
@@ -234,7 +248,7 @@ function sanitizeForFirestore(colName, docId, rawVal) {
     out.memberId = clampString(out.memberId || 'UCWF-MEMBER', 64);
     if (out.memberId.length < 2) out.memberId = 'UCWF-MEMBER';
     out.name = clampString(out.name || out.displayName || 'Foundation Member', 120) || 'Foundation Member';
-    out.status = ['active', 'pending', 'inactive', 'suspended'].includes(out.status)
+    out.status = ['active', 'pending', 'inactive', 'suspended', 'blocked'].includes(out.status)
       ? out.status
       : 'active';
     if (out.displayName !== undefined) out.displayName = clampString(String(out.displayName), 140);
@@ -259,10 +273,12 @@ function sanitizeForFirestore(colName, docId, rawVal) {
     out.userId = clampString(String(out.userId || 'portal_member'), 128) || 'portal_member';
     out.type = clampString(String(out.type || 'credit'), 40) || 'credit';
     out.amount = Number(out.amount || 0);
-    if (out.description !== undefined) out.description = clampString(String(out.description), 300);
+    if (out.description !== undefined || out.note !== undefined) {
+      out.description = clampString(String(out.description || out.note || ''), 300);
+    }
   } else if (colName === 'payout_records' || colName === 'payout_logs') {
     out.id = cleanId;
-    out.amount = Math.max(0, Number(out.amount || 0));
+    out.amount = Math.max(0, Number(out.amount ?? out.packageAmount ?? out.totalDistributed ?? 0));
   } else if (colName === 'spends' || colName === 'expenses') {
     out.id = cleanId;
     out.title = clampString(String(out.title || 'Foundation Expense'), 200) || 'Foundation Expense';
@@ -275,6 +291,9 @@ function sanitizeForFirestore(colName, docId, rawVal) {
   } else if (colName === 'media_gallery') {
     out.id = cleanId;
     out.kind = out.kind === 'posters' ? 'posters' : 'videos';
+    if (out.url !== undefined || out.imageUrl !== undefined) {
+      out.url = clampString(String(out.url || out.imageUrl || ''), 900000);
+    }
   } else if (colName === 'daily_closings') {
     out.date = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(cleanId) ? cleanId : new Date().toISOString().slice(0, 10);
   } else if (colName === 'events') {
@@ -289,6 +308,7 @@ function sanitizeForFirestore(colName, docId, rawVal) {
 // 4. Local Hydrated Store + IndexedDB + Seed Root Sponsor + Broadcast Sync
 // ---------------------------------------------------------------------------
 const LOCAL_CACHE_KEY = 'ucwf_rtdb_cache_v2';
+const PENDING_SYNC_KEY = 'ucwf_pending_sync_v1';
 const IDB_NAME = 'ucwf_rtdb_idb';
 const IDB_STORE = 'kv';
 const SYNC_CHANNEL_NAME = 'ucwf_rtdb_sync_v1';
@@ -479,11 +499,60 @@ function loadInitialTree() {
   return seed;
 }
 
+function loadPendingSyncMap() {
+  const map = new Map();
+  if (typeof localStorage === 'undefined') return map;
+  try {
+    const raw = localStorage.getItem(PENDING_SYNC_KEY);
+    if (!raw) return map;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (item && item.key && item.entry) {
+          map.set(item.key, item.entry);
+        }
+      }
+    }
+  } catch {}
+  return map;
+}
+
 let dbTree = loadInitialTree();
 const listeners = new Map();
 let listenerSeq = 1;
 let broadcastChannel = null;
-const pendingFirestoreSync = new Map();
+const pendingFirestoreSync = loadPendingSyncMap();
+const syncListeners = new Set();
+
+function persistPendingSyncMap() {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const arr = Array.from(pendingFirestoreSync.entries()).map(([key, entry]) => ({ key, entry }));
+    localStorage.setItem(PENDING_SYNC_KEY, JSON.stringify(arr));
+  } catch {}
+}
+
+function notifySyncListeners() {
+  const status = getCloudSyncStatus();
+  for (const cb of syncListeners) {
+    try {
+      cb(status);
+    } catch {}
+  }
+}
+
+function markPendingSync(key, entry) {
+  pendingFirestoreSync.set(key, entry);
+  persistPendingSyncMap();
+  notifySyncListeners();
+}
+
+function clearPendingSync(key) {
+  if (pendingFirestoreSync.delete(key)) {
+    persistPendingSyncMap();
+    notifySyncListeners();
+  }
+}
 
 if (typeof BroadcastChannel !== 'undefined') {
   try {
@@ -687,11 +756,18 @@ function isBootstrappedAdminSession() {
   return Boolean(u && u.emailVerified && u.email === BOOTSTRAPPED_ADMIN_EMAIL);
 }
 
-function canWriteCollectionToFirestore(colName) {
+function canWriteCollectionToFirestore(colName, docId = null, rawVal = null) {
   const u = auth?.currentUser;
   if (!u || !u.emailVerified) return false;
   if (u.email === BOOTSTRAPPED_ADMIN_EMAIL) return true;
-  return ['users', 'payment_requests', 'withdrawals', 'media_submissions'].includes(colName);
+  if (colName === 'users') {
+    return Boolean(docId && sanitizeId(docId) === u.uid);
+  }
+  if (['payment_requests', 'withdrawals', 'media_submissions'].includes(colName)) {
+    if (!rawVal || typeof rawVal !== 'object') return false;
+    return (rawVal.userId === u.uid || rawVal.uid === u.uid) && rawVal.status === 'pending';
+  }
+  return false;
 }
 
 export function getCloudSyncStatus() {
@@ -706,15 +782,27 @@ export function getCloudSyncStatus() {
   };
 }
 
+export function onCloudSyncChange(cb) {
+  if (typeof cb !== 'function') return () => {};
+  syncListeners.add(cb);
+  try {
+    cb(getCloudSyncStatus());
+  } catch {}
+  return () => {
+    syncListeners.delete(cb);
+  };
+}
+
 async function pushTargetToFirestore(target, forceOp = null) {
-  if (typeof window === 'undefined' || !target) return;
+  if (typeof window === 'undefined' || !target) return false;
   const { colName, docId, localSegments, extra } = target;
   const rawVal = getValueAtSegments(localSegments);
   const op = forceOp || (rawVal === null || rawVal === undefined ? 'delete' : 'set');
+  const syncKey = `${colName}/${docId}`;
 
-  if (!canWriteCollectionToFirestore(colName)) {
-    pendingFirestoreSync.set(`${colName}/${docId}`, { ...target, op });
-    return;
+  if (!canWriteCollectionToFirestore(colName, docId, rawVal)) {
+    markPendingSync(syncKey, { ...target, op });
+    return false;
   }
 
   const docRef = doc(firestoreDb, colName, docId);
@@ -726,28 +814,101 @@ async function pushTargetToFirestore(target, forceOp = null) {
       const sanitized = sanitizeForFirestore(colName, docId, merged);
       await setDoc(docRef, sanitized, { merge: true });
     }
-    pendingFirestoreSync.delete(`${colName}/${docId}`);
+    clearPendingSync(syncKey);
+    return true;
   } catch (err) {
+    markPendingSync(syncKey, { ...target, op });
     if (err?.code === 'permission-denied' || String(err?.message || '').includes('permission')) {
       try {
-        handleFirestoreError(err, op === 'delete' ? OperationType.DELETE : OperationType.WRITE, `${colName}/${docId}`);
+        handleFirestoreError(err, op === 'delete' ? OperationType.DELETE : OperationType.WRITE, syncKey);
       } catch (structuredErr) {
         console.warn('Firestore write permission info:', structuredErr.message);
       }
     } else {
-      console.warn(`Firestore sync note (${colName}/${docId}):`, err?.message || err);
+      console.warn(`Firestore sync note (${syncKey}):`, err?.message || err);
     }
+    return false;
   }
 }
 
 async function flushPendingFirestoreWrites() {
-  if (pendingFirestoreSync.size === 0) return;
+  if (pendingFirestoreSync.size === 0) return 0;
+  let flushed = 0;
   const entries = Array.from(pendingFirestoreSync.values());
   for (const entry of entries) {
-    if (canWriteCollectionToFirestore(entry.colName)) {
-      await pushTargetToFirestore(entry, entry.op);
+    const rawVal = getValueAtSegments(entry.localSegments);
+    if (canWriteCollectionToFirestore(entry.colName, entry.docId, rawVal)) {
+      const ok = await pushTargetToFirestore(entry, entry.op);
+      if (ok) flushed++;
     }
   }
+  return flushed;
+}
+
+export async function forceSyncAllToCloud() {
+  if (typeof window === 'undefined') return { synced: 0, pending: pendingFirestoreSync.size, authenticated: false };
+  const u = auth?.currentUser;
+  if (!u || !u.emailVerified) {
+    notifySyncListeners();
+    return { synced: 0, pending: pendingFirestoreSync.size, authenticated: false };
+  }
+
+  let synced = await flushPendingFirestoreWrites();
+  const colsToSync = [
+    'users',
+    'payment_requests',
+    'withdrawals',
+    'transactions',
+    'payout_records',
+    'payout_logs',
+    'daily_closings',
+    'expenses',
+    'spends',
+    'media_submissions',
+    'media_gallery',
+    'events',
+    'settings',
+  ];
+
+  for (const colName of colsToSync) {
+    const bucket = dbTree[colName];
+    if (!bucket || typeof bucket !== 'object') continue;
+
+    if (colName === 'media_gallery') {
+      for (const kind of ['videos', 'posters']) {
+        const subBucket = bucket[kind];
+        if (!subBucket || typeof subBucket !== 'object') continue;
+        for (const [itemId, itemVal] of Object.entries(subBucket)) {
+          if (!itemVal || typeof itemVal !== 'object') continue;
+          const target = resolveFirestoreTarget(['media_gallery', kind, itemId]);
+          if (target && canWriteCollectionToFirestore(target.colName, target.docId, itemVal)) {
+            const ok = await pushTargetToFirestore(target, 'set');
+            if (ok) synced++;
+          }
+        }
+      }
+      continue;
+    }
+
+    for (const [entryKey, entryVal] of Object.entries(bucket)) {
+      if (colName === 'settings') {
+        const target = resolveFirestoreTarget(['settings', entryKey]);
+        if (target && canWriteCollectionToFirestore('settings', target.docId, entryVal)) {
+          const ok = await pushTargetToFirestore(target, 'set');
+          if (ok) synced++;
+        }
+      } else if (entryVal && typeof entryVal === 'object') {
+        const target = resolveFirestoreTarget([colName, entryKey]);
+        if (target && canWriteCollectionToFirestore(target.colName, target.docId, entryVal)) {
+          const ok = await pushTargetToFirestore(target, 'set');
+          if (ok) synced++;
+        }
+      }
+    }
+  }
+
+  notifySyncListeners();
+  return { synced, pending: pendingFirestoreSync.size, authenticated: true };
 }
 
 function mergeRemoteCollectionSnapshot(colName, snap) {
@@ -757,6 +918,11 @@ function mergeRemoteCollectionSnapshot(colName, snap) {
 
   let changed = false;
   snap.docs.forEach((docSnap) => {
+    const pendingEntry = pendingFirestoreSync.get(`${colName}/${docSnap.id}`);
+    if (pendingEntry?.op === 'delete') {
+      return;
+    }
+
     const data = docSnap.data();
     if (colName === 'settings') {
       const key = data?.key || docSnap.id;
@@ -772,6 +938,21 @@ function mergeRemoteCollectionSnapshot(colName, snap) {
       }
       if (!dbTree.media_gallery[kind]) dbTree.media_gallery[kind] = {};
       dbTree.media_gallery[kind][rawId] = data;
+      changed = true;
+    } else if (colName === 'daily_closings') {
+      const prev = dbTree.daily_closings[docSnap.id] || {};
+      dbTree.daily_closings[docSnap.id] = {
+        ...prev,
+        ...data,
+        summary:
+          prev.summary || data?.summary
+            ? { ...(prev.summary || {}), ...(data?.summary || {}) }
+            : undefined,
+        statements:
+          prev.statements || data?.statements
+            ? { ...(prev.statements || {}), ...(data?.statements || {}) }
+            : undefined,
+      };
       changed = true;
     } else {
       dbTree[colName][docSnap.id] = { ...(dbTree[colName][docSnap.id] || {}), ...data };
@@ -876,10 +1057,27 @@ function ensureFirestoreBootstrapped() {
   onAuthStateChanged(auth, (firebaseUser) => {
     clearAuthListeners();
     attachPublicFirestoreListeners();
+    notifySyncListeners();
     if (firebaseUser) {
       attachAuthenticatedFirestoreListeners(firebaseUser);
-      flushPendingFirestoreWrites();
+      flushPendingFirestoreWrites().then(() => {
+        if (isBootstrappedAdminSession()) {
+          forceSyncAllToCloud();
+        }
+      });
     }
+  });
+
+  window.addEventListener('online', () => {
+    flushPendingFirestoreWrites().then(() => {
+      if (isBootstrappedAdminSession()) {
+        forceSyncAllToCloud();
+      }
+    });
+  });
+
+  window.addEventListener('focus', () => {
+    flushPendingFirestoreWrites();
   });
 }
 
@@ -1094,6 +1292,8 @@ export default {
   googleProvider,
   testConnection,
   getCloudSyncStatus,
+  onCloudSyncChange,
+  forceSyncAllToCloud,
   OperationType,
   handleFirestoreError,
 };

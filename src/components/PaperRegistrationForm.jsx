@@ -33,10 +33,12 @@ import {
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import { rtdb } from '../lib/firebase';
-import { ref, set, push, get } from 'firebase/database';
+import { ref, set, push, get, onValue } from 'firebase/database';
 import { uploadToCloudinary, compressImageToBase64 } from '../lib/cloudinary';
 import { useAuth } from '../contexts/AuthContext';
 import { distribute12LevelCommission } from '../utils/commission';
+import { generateUniqueMemberId } from '../utils/mlmUtils';
+import SponsorSelector from './SponsorSelector';
 import { 
   FOUNDATION_DETAILS, 
   PACKAGES, 
@@ -107,11 +109,21 @@ export default function PaperRegistrationForm({
   // View state: 'digital' (modern trusted mobile-optimized form) vs 'paper' (A4 sheet preview)
   const [formView, setFormView] = useState('digital');
 
+  const [allUsersMap, setAllUsersMap] = useState({});
+
   // Auto-generate unique Member ID
   const [memberId, setMemberId] = useState(() => {
     const randomNum = Math.floor(1000 + Math.random() * 9000);
     return `UCWF-2026-${randomNum}`;
   });
+
+  useEffect(() => {
+    const unsub = onValue(ref(rtdb, 'users'), (snap) => {
+      const val = snap.exists() ? snap.val() : {};
+      setAllUsersMap(val || {});
+    });
+    return () => unsub();
+  }, []);
 
   // 1. पद का नाम
   const [selectedPadType, setSelectedPadType] = useState('कार्यकारिणी सदस्य (Executive Member)');
@@ -152,10 +164,16 @@ export default function PaperRegistrationForm({
   const [gender, setGender] = useState('पुरुष');
 
   // 10. स्पॉन्सर आईडी, पासवर्ड & सहयोग राशि
-  const defaultSponsor = (!initialSponsorId || initialSponsorId === 'DIRECT') ? '9540648402' : initialSponsorId;
+  const defaultSponsor = (!initialSponsorId || initialSponsorId === 'DIRECT') ? 'UCWF-0001' : initialSponsorId;
   const [sponsorId, setSponsorId] = useState(defaultSponsor);
   const [sponsorName, setSponsorName] = useState('उत्तम चैरिटेबल ट्रस्ट (हेड ऑफिस)');
   const [sponsorVerified, setSponsorVerified] = useState(true);
+
+  useEffect(() => {
+    if (initialSponsorId && initialSponsorId !== 'DIRECT') {
+      setSponsorId(String(initialSponsorId).toUpperCase());
+    }
+  }, [initialSponsorId]);
 
   // Auto-Generated unique password
   const [password, setPassword] = useState('');
@@ -627,13 +645,14 @@ export default function PaperRegistrationForm({
       }
 
       // Accounting record in /payment_requests
+      const resolvedMemberId = registeredResult?.memberId || memberId.trim().toUpperCase();
       try {
         const paymentRequestsRef = ref(rtdb, 'payment_requests');
         const newPaymentRef = push(paymentRequestsRef);
         await set(newPaymentRef, {
           id: newPaymentRef.key,
-          userId: registeredResult?.uid || 'N/A',
-          memberId: memberId.trim().toUpperCase(),
+          userId: registeredResult?.uid || uniqueUid,
+          memberId: resolvedMemberId,
           userName: `${salutation} ${name.trim()}`,
           email: cleanEmail,
           phone: cleanPhone,
@@ -656,13 +675,13 @@ export default function PaperRegistrationForm({
 
       // Instant 12-level commission credit to uplines & trust calculation
       try {
-        await distribute12LevelCommission(registeredResult?.uid || memberId.trim().toUpperCase(), numAmount);
+        await distribute12LevelCommission(registeredResult?.uid || resolvedMemberId, numAmount);
       } catch (commErr) {
         console.warn('Instant commission credit note:', commErr);
       }
 
       setSuccessData({
-        memberId: memberId.trim().toUpperCase(),
+        memberId: resolvedMemberId,
         name: `${salutation} ${name.trim()}`,
         padNaam: effectivePadNaam,
         phone: cleanPhone,
@@ -680,7 +699,7 @@ export default function PaperRegistrationForm({
       });
 
       if (onSuccessCallback) {
-        onSuccessCallback(fullMemberPayload);
+        onSuccessCallback({ ...fullMemberPayload, memberId: resolvedMemberId, uid: registeredResult?.uid || uniqueUid });
       }
     } catch (err) {
       console.error('Form registration failed:', err);
@@ -688,6 +707,56 @@ export default function PaperRegistrationForm({
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleResetForm = () => {
+    setSuccessData(null);
+    setErrorMsg('');
+    setMemberId(generateUniqueMemberId(allUsersMap));
+    setName('');
+    setPhone('');
+    setPassword('');
+    setPasswordManuallyEdited(false);
+    setEmail('');
+    setFatherName('');
+    setMotherName('');
+    setAadhaarNumber('');
+    setPanNumber('');
+    setOccupation('');
+    setQualification('');
+    setDob('');
+    setPermanentAddress('');
+    setPermanentPincode('');
+    setCurrentAddress('');
+    setCurrentPincode('');
+    setSameAsPermanent(false);
+    setEnteredUtr('');
+    setBankName('');
+    setAccountNo('');
+    setIfsc('');
+    setUpiId('');
+    setOfficeName1('');
+    setOfficePhone1('');
+    setOfficeProposedPost2('');
+    setOfficePhone2('');
+    setPhotoPreview(null);
+    setPhotoUrl('');
+    setPhotoDocName('');
+    setSignaturePreview(null);
+    setSignatureUrl('');
+    setSignatureDocName('');
+    setAadhaarPreview(null);
+    setAadhaarDocUrl('');
+    setAadhaarDocName('');
+    setAadhaarBackPreview(null);
+    setAadhaarBackDocUrl('');
+    setAadhaarBackDocName('');
+    setPanPreview(null);
+    setPanDocUrl('');
+    setPanDocName('');
+    setReceiptPreview(null);
+    setPaymentReceiptUrl('');
+    setPaymentReceiptName('');
   };
 
   // SUCCESS CONFIRMATION MODAL / VIEW
@@ -833,14 +902,7 @@ export default function PaperRegistrationForm({
 
           <button
             type="button"
-            onClick={() => {
-              setSuccessData(null);
-              setMemberId(`UCWF-2026-${Math.floor(1000 + Math.random() * 9000)}`);
-              setName('');
-              setPhone('');
-              setPassword('');
-              setEmail('');
-            }}
+            onClick={handleResetForm}
             className="w-full sm:w-auto px-6 py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-700/25 cursor-pointer"
           >
             <UserCheck className="w-4 h-4" />
@@ -1421,28 +1483,14 @@ export default function PaperRegistrationForm({
                   </p>
                 </div>
 
-                {/* Sponsor ID with Live Verified Look */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-xs font-extrabold text-slate-800">
-                      स्पॉन्सर ID / रेफरल कोड (Sponsor ID) *
-                    </label>
-                    <span className="text-[10px] text-blue-700 font-bold">
-                      {sponsorVerified ? '✓ प्रमाणित' : 'जांच जारी'}
-                    </span>
-                  </div>
-                  <input
-                    type="text"
-                    required
+                {/* Sponsor ID with Searchable Team Selector */}
+                <div className="sm:col-span-2">
+                  <SponsorSelector
                     value={sponsorId}
-                    onChange={(e) => setSponsorId(e.target.value)}
-                    placeholder="9540648402"
-                    className="w-full px-4 py-3 rounded-2xl glass-input text-xs sm:text-sm font-mono font-bold text-slate-900 uppercase outline-none"
+                    onChange={setSponsorId}
+                    usersMap={allUsersMap}
+                    label="स्पॉन्सर चुनें / Sponsor ID (जिस सदस्य के नीचे जोड़ना है) *"
                   />
-                  <div className="mt-1 px-3 py-1 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-700 flex items-center justify-between">
-                    <span>स्पॉन्सर नाम:</span>
-                    <strong className="text-emerald-800 font-bold">{sponsorName}</strong>
-                  </div>
                 </div>
 
                 {/* Aadhaar Number */}

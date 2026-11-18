@@ -66,6 +66,38 @@ export function lastDigits(s) {
 }
 
 /**
+ * Generate a guaranteed unique Member ID against all existing users in RTDB/Firestore.
+ */
+export function generateUniqueMemberId(allUsersMap = {}, prefix = 'UCWF-2026') {
+  const usedIds = new Set();
+  Object.values(allUsersMap || {}).forEach((u) => {
+    if (u && u.memberId) {
+      usedIds.add(normId(u.memberId));
+    }
+  });
+
+  const cleanPrefix = String(prefix || 'UCWF-2026').trim().toUpperCase().replace(/-+$/, '');
+
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const num = Math.floor(1000 + Math.random() * 9000);
+    const candidate = `${cleanPrefix}-${num}`;
+    if (!usedIds.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const num = Math.floor(10000 + Math.random() * 90000);
+    const candidate = `${cleanPrefix}-${num}`;
+    if (!usedIds.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return `${cleanPrefix}-${Date.now().toString().slice(-6)}`;
+}
+
+/**
  * Round to 2 decimal places cleanly (preserves .5 rates like 2.5% and 1.5% without floating-point drift)
  */
 export function round2(val) {
@@ -715,6 +747,7 @@ export default {
   normalizeLevelRates,
   normId,
   lastDigits,
+  generateUniqueMemberId,
   parseAmount,
   parseAnyDateToEpochMs,
   epochMsToISTDateString,

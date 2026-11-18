@@ -19,7 +19,8 @@ import {
   RotateCcw,
   Building2,
   ArrowDown,
-  ArrowRight
+  ArrowRight,
+  UserPlus
 } from 'lucide-react';
 import { rtdb } from '../lib/firebase';
 import { ref, get, onValue } from 'firebase/database';
@@ -42,7 +43,8 @@ import {
 export default function GenerationTreeChart({ 
   initialRootId = '', 
   customAllUsers = null,
-  title = ''
+  title = '',
+  onAddDownlineMember = null
 }) {
   const fileRef = useRef(null);
   const photoRef = useRef(null);
@@ -458,6 +460,20 @@ export default function GenerationTreeChart({
                 <strong className="text-purple-300 text-sm font-black">{generationStats.totalMembers - level1Members.length} Members</strong>
               </div>
             </div>
+
+            {onAddDownlineMember && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAddDownlineMember(rootMember);
+                }}
+                className="mt-3 w-full py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow-md transition cursor-pointer"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>+ इस सदस्य के नीचे नया मेंबर जोड़ें</span>
+              </button>
+            )}
           </div>
 
           {/* VERTICAL STEM BELOW ROOT */}
@@ -519,18 +535,33 @@ export default function GenerationTreeChart({
                         </div>
 
                         {/* Action buttons inside card */}
-                        <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between">
+                        <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               setActiveRootId(l1Member.memberId || l1Member.uid);
                             }}
-                            className="text-[10px] text-pink-700 hover:text-pink-900 font-bold hover:underline"
+                            className="text-[10px] text-pink-700 hover:text-pink-900 font-bold hover:underline cursor-pointer"
                             title="Focus this member as tree root"
                           >
                             Focus Tree →
                           </button>
+
+                          {onAddDownlineMember && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onAddDownlineMember(l1Member);
+                              }}
+                              className="px-2 py-0.5 rounded-md bg-emerald-100 hover:bg-emerald-200 text-emerald-900 font-bold text-[10px] flex items-center gap-1 cursor-pointer"
+                              title="Add member under this person"
+                            >
+                              <UserPlus className="w-3 h-3" />
+                              <span>+ Downline</span>
+                            </button>
+                          )}
 
                           <span className="px-2 py-0.5 rounded-md bg-purple-50 text-purple-800 font-mono text-[10px] font-bold">
                             {directChildren.length} Directs
@@ -604,7 +635,21 @@ export default function GenerationTreeChart({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 pt-2">
+            <div className="flex flex-wrap items-center gap-2 pt-2">
+              {onAddDownlineMember && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const picked = selectedNodeDetails;
+                    setSelectedNodeDetails(null);
+                    onAddDownlineMember(picked);
+                  }}
+                  className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-1.5 transition cursor-pointer"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>+ Add Downline Under {safeText(selectedNodeDetails.memberId || selectedNodeDetails.name)}</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {

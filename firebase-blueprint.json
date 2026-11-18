@@ -19,7 +19,10 @@
         "walletBalance": { "type": "number" },
         "totalEarned": { "type": "number" },
         "totalWithdrawn": { "type": "number" },
-        "status": { "type": "string", "enum": ["active", "pending", "inactive", "suspended"] },
+        "commissionPaid": { "type": "number" },
+        "commissionUnpaid": { "type": "number" },
+        "totalCommission": { "type": "number" },
+        "status": { "type": "string", "enum": ["active", "pending", "inactive", "suspended", "blocked"] },
         "role": { "type": "string", "enum": ["member", "admin"] },
         "is_admin": { "type": "boolean" },
         "timestamp": { "type": "number" }

@@ -62,7 +62,7 @@ import { useDiwaliTheme } from '../contexts/DiwaliThemeContext';
 import DiwaliBanner from '../components/diwali/DiwaliBanner';
 import GlowingDiya from '../components/diwali/GlowingDiya';
 import { uploadToCloudinary } from '../lib/cloudinary';
-import { rtdb, getCloudSyncStatus } from '../lib/firebase';
+import { rtdb, getCloudSyncStatus, onCloudSyncChange, forceSyncAllToCloud } from '../lib/firebase';
 import { ref, onValue, update, remove, push, set } from 'firebase/database';
 import { 
   getSavedLevelRates, 
@@ -122,7 +122,9 @@ export default function AdminPanel() {
   const { logout, loginWithGoogle, user: authUser } = useAuth();
   const { isDiwaliActive, toggleDiwaliTheme } = useDiwaliTheme();
   const [cloudSyncLoading, setCloudSyncLoading] = useState(false);
-  const cloudSync = getCloudSyncStatus();
+  const [cloudSync, setCloudSync] = useState(() => getCloudSyncStatus());
+  const [preselectedSponsorId, setPreselectedSponsorId] = useState('');
+  useEffect(() => onCloudSyncChange(setCloudSync), []);
   const [activeTab, setActiveTab] = useState('my-report'); // 'members' | 'payments' | 'withdrawals' | 'media' | 'settings' | 'video-posters'
   
   // Video & Poster Manager States (Requirement 2 & 3)
@@ -249,6 +251,11 @@ export default function AdminPanel() {
     setEditPhone(member?.phone || '');
     setEditDesignation(member?.padNaam || member?.designation || '');
     setEditAddress(member?.address || member?.city || '');
+    setEditEmail(member?.email || '');
+    setEditPassword(member?.password || member?.plainPassword || '');
+    setEditSponsorId(member?.sponsorId || 'DIRECT');
+    setEditStatus(member?.status || 'active');
+    setEditCity(member?.city || '');
   };
 
   // Add Member Paper Form Modal State
@@ -1360,7 +1367,8 @@ export default function AdminPanel() {
     setSaveRatesSuccess(false);
     try {
       await saveLevelRates(levelRates);
-      await saveSelfBusinessRate(Number(selfBusinessRate || 0));
+      await saveSelfBusinessRate(0); // Locked to 0% per foundation rules
+      setSelfBusinessRate(0);
       setSaveRatesSuccess(true);
       setTimeout(() => setSaveRatesSuccess(false), 3000);
     } catch (err) {
@@ -1889,6 +1897,19 @@ export default function AdminPanel() {
     if (!editingMember) return;
 
     try {
+      const prevMember = users[editingMember.uid] || {};
+      const nextSponsorId = String(editingMember.sponsorId || editSponsorId || 'DIRECT').trim().toUpperCase();
+      const nextPassword = editingMember.password || editPassword || '';
+      const nextSelfBiz = Number(editingMember.selfBusiness ?? editingMember.packageAmount ?? editingMember.packageTier ?? 0);
+      const nextPkgAmount = Number(editingMember.packageAmount ?? nextSelfBiz);
+      const nextStatus = editingMember.status || editStatus || 'active';
+
+      const structureChanged =
+        String(prevMember.sponsorId || 'DIRECT').trim().toUpperCase() !== nextSponsorId ||
+        Number(prevMember.selfBusiness ?? prevMember.packageAmount ?? 0) !== nextSelfBiz ||
+        Number(prevMember.packageAmount ?? 0) !== nextPkgAmount ||
+        String(prevMember.status || '') !== String(nextStatus);
+
       await update(ref(rtdb, `users/${editingMember.uid}`), {
         salutation: editingMember.salutation || 'श्री',
         name: editingMember.name || editName,
@@ -1900,23 +1921,31 @@ export default function AdminPanel() {
         designation: editingMember.padNaam || editingMember.designation || editDesignation || 'कार्यकारिणी सदस्य',
         email: editingMember.email || editEmail,
         phone: editingMember.phone || editPhone,
-        password: editingMember.password || editPassword,
-        sponsorId: editingMember.sponsorId || editSponsorId || 'DIRECT',
-        status: editingMember.status || editStatus,
-        packageAmount: Number(editingMember.packageAmount || 0),
+        password: nextPassword,
+        plainPassword: nextPassword,
+        sponsorId: nextSponsorId,
+        status: nextStatus,
+        isApproved: nextStatus === 'active',
+        packageAmount: nextPkgAmount,
+        packageTier: nextPkgAmount,
         packageName: editingMember.packageName || '',
         city: editingMember.city || editCity || '',
         state: editingMember.state || '',
         address: editingMember.address || editAddress || editingMember.city || '',
         walletBalance: Number(editingMember.walletBalance || 0),
-        selfBusiness: Number(editingMember.selfBusiness ?? editingMember.packageAmount ?? 0),
+        selfBusiness: nextSelfBiz,
         teamBusiness: Number(editingMember.teamBusiness ?? 0),
         downlineBusiness: Number(editingMember.downlineBusiness ?? 0),
         directTeamCommission: Number(editingMember.directTeamCommission ?? 0),
-        selfBusinessCommission: Number(editingMember.selfBusinessCommission ?? 0),
+        selfBusinessCommission: 0,
         downlineCommission: Number(editingMember.downlineCommission ?? 0),
         totalCommission: Number(editingMember.totalCommission ?? 0)
       });
+
+      if (structureChanged) {
+        await syncAndFixAllMemberBalances();
+      }
+
       showToast('सदस्य की जानकारी सफलतापूर्वक अपडेट हो गई!');
       setEditingMember(null);
     } catch (err) {
@@ -1994,34 +2023,58 @@ export default function AdminPanel() {
 
           {/* Action Toolbar & Countdown Badge */}
           <div className="flex flex-wrap items-center gap-3">
-            {/* Optional Cloud Firestore Google Auth Sync Status */}
-            {cloudSync.isCloudAuthenticated || authUser ? (
-              <span
-                className="px-3 py-1.5 rounded-2xl bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold text-xs flex items-center gap-1.5"
-                title={`Firestore Cloud Sync Active (${cloudSync.cloudEmail || authUser?.email || 'Connected'})`}
-              >
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Cloud Sync: Live</span>
-              </span>
+            {/* Cloud Firestore Google Auth Sync Status & Manual Force Sync */}
+            {cloudSync.isCloudAuthenticated ? (
+              <div className="flex items-center gap-2">
+                <span
+                  className="px-3 py-1.5 rounded-2xl bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold text-xs flex items-center gap-1.5"
+                  title={`Firestore Cloud Sync Active (${cloudSync.email || authUser?.email || 'Connected'})`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>Cloud Sync: Live{cloudSync.email ? ` (${cloudSync.email})` : ''}</span>
+                </span>
+                <button
+                  type="button"
+                  disabled={cloudSyncLoading}
+                  onClick={async () => {
+                    setCloudSyncLoading(true);
+                    try {
+                      const res = await forceSyncAllToCloud();
+                      showToast(`Cloud Sync पूर्ण: ${res.synced} रिकॉर्ड सिंक हुए${res.pending > 0 ? `, ${res.pending} लंबित` : ' (0 लंबित)'}।`);
+                    } catch (err) {
+                      showToast('Cloud Sync त्रुटि: ' + (err?.message || err), 'error');
+                    } finally {
+                      setCloudSyncLoading(false);
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition cursor-pointer disabled:opacity-50"
+                  title="Force push all local members & records to Cloud Firestore right now"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncLoading ? 'animate-spin' : ''}`} />
+                  <span>Sync Now{cloudSync.pendingSyncCount > 0 ? ` (${cloudSync.pendingSyncCount})` : ''}</span>
+                </button>
+              </div>
             ) : (
               <button
                 type="button"
                 disabled={cloudSyncLoading}
                 onClick={async () => {
                   setCloudSyncLoading(true);
-                  const res = await loginWithGoogle();
-                  setCloudSyncLoading(false);
-                  if (res?.success) {
-                    showToast('Google Cloud Firestore Sync सफलतापूर्वक सक्रिय हो गया!');
-                  } else if (res?.error) {
-                    showToast('Cloud Sync त्रुटि: ' + res.error, 'error');
+                  try {
+                    const cred = await loginWithGoogle();
+                    const res = await forceSyncAllToCloud();
+                    showToast(`Google Cloud Sync सक्रिय (${cred?.user?.email || ''}) — ${res.synced} रिकॉर्ड सिंक हुए!`);
+                  } catch (err) {
+                    showToast('Cloud Sync त्रुटि: ' + (err?.message || 'Google लॉगिन रद्द या विफल रहा'), 'error');
+                  } finally {
+                    setCloudSyncLoading(false);
                   }
                 }}
                 className="px-3.5 py-2 rounded-2xl bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                title="Enable multi-device Firebase Cloud Firestore sync via Admin Google account"
+                title="Enable multi-device Firebase Cloud Firestore sync via Admin Google account (singhshriyansh51@gmail.com)"
               >
                 {cloudSyncLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />}
-                <span>Connect Cloud Sync</span>
+                <span>Connect Cloud Sync{cloudSync.pendingSyncCount > 0 ? ` (${cloudSync.pendingSyncCount} Pending)` : ''}</span>
               </button>
             )}
 
@@ -2254,7 +2307,9 @@ export default function AdminPanel() {
             <NewJoiningSection
               isAdmin={true}
               isAdminMode={true}
+              defaultSponsorId={preselectedSponsorId}
               onRegistered={(newMember) => {
+                setPreselectedSponsorId('');
                 setMemberStatusFilter('ALL');
                 setCommissionFilter('ALL');
                 setMemberSearch('');
@@ -2447,7 +2502,13 @@ export default function AdminPanel() {
 
             {showTreeChartInAdmin && (
               <div className="p-6 rounded-3xl bg-white border-2 border-purple-200 shadow-sm">
-                <GenerationTreeChart title="Admin 12-Level Generation Network Tree Chart" />
+                <GenerationTreeChart
+                  title="Admin 12-Level Generation Network Tree Chart"
+                  onAddDownlineMember={(m) => {
+                    setPreselectedSponsorId(String(m?.memberId || m?.phone || m?.uid || '').toUpperCase());
+                    setActiveTab('new-joining');
+                  }}
+                />
               </div>
             )}
 
@@ -2816,6 +2877,19 @@ export default function AdminPanel() {
                                 title="View & Print Digital ID Card"
                               >
                                 <CreditCard className="w-3.5 h-3.5 text-indigo-600" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPreselectedSponsorId(String(member.memberId || member.phone || member.uid || '').toUpperCase());
+                                  setActiveTab('new-joining');
+                                }}
+                                className="px-2 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 font-bold text-[10px] transition cursor-pointer flex items-center gap-1"
+                                title="Add a new member directly under this member (टीम के नीचे नया सदस्य जोड़ें)"
+                              >
+                                <UserPlus className="w-3 h-3" />
+                                <span>+ Downline</span>
                               </button>
 
                               <button
@@ -3329,17 +3403,17 @@ export default function AdminPanel() {
         {activeTab === 'payments' && (
           <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
             <div>
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                <CreditCard className="w-5 h-5 text-emerald-400" />
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <CreditCard className="w-5 h-5 text-emerald-600" />
                 <span>UTR भुगतान सत्यापन एवं 12-लेवल मानदेय स्वीकृति</span>
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-slate-500 mt-0.5">
                 भुगतान स्वीकृत करते ही संबंधित सदस्य सक्रिय हो जाएगा और उसके 12 अपलाइनों को कमीशन स्वतः वितरित हो जाएगा।
               </p>
             </div>
 
             {paymentRequestsList.length === 0 ? (
-              <div className="py-16 text-center text-xs text-slate-400">
+              <div className="py-16 text-center text-xs text-slate-500">
                 कोई भुगतान अनुरोध दर्ज नहीं है।
               </div>
             ) : (
@@ -3360,26 +3434,26 @@ export default function AdminPanel() {
                   <tbody className="divide-y divide-pink-100">
                     {paymentRequestsList.map((payment) => (
                       <tr key={payment.id} className="hover:bg-pink-50/40">
-                        <td className="py-3 px-3 text-slate-400 whitespace-nowrap">
+                        <td className="py-3 px-3 text-slate-600 whitespace-nowrap">
                           {payment.createdAt ? new Date(payment.createdAt).toLocaleDateString('hi-IN') : '-'}
                         </td>
-                        <td className="py-3 px-3 font-bold text-white">
+                        <td className="py-3 px-3 font-bold text-slate-900">
                           {safeText(payment.userName)}
                         </td>
-                        <td className="py-3 px-3 font-mono text-emerald-400">
+                        <td className="py-3 px-3 font-mono font-bold text-emerald-700">
                           {safeText(payment.memberId)}
                         </td>
-                        <td className="py-3 px-3 font-bold text-white">
+                        <td className="py-3 px-3 font-bold text-slate-900">
                           {formatINR(payment.amount || 0)}
                         </td>
-                        <td className="py-3 px-3 font-mono text-amber-400 font-bold">
+                        <td className="py-3 px-3 font-mono text-amber-800 font-bold">
                           <div>{safeText(payment.utrNumber)}</div>
                           {payment.paymentReceiptUrl && (
                             <a
                               href={payment.paymentReceiptUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-[10px] font-bold border border-purple-500/30"
+                              className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 hover:bg-purple-200 text-[10px] font-bold border border-purple-200"
                               title="भुगतान रसीद स्क्रीनशॉट देखें"
                             >
                               <Eye className="w-2.5 h-2.5" />
@@ -3387,23 +3461,23 @@ export default function AdminPanel() {
                             </a>
                           )}
                         </td>
-                        <td className="py-3 px-3 font-mono text-slate-400">
+                        <td className="py-3 px-3 font-mono text-slate-700 font-semibold">
                           {safeText(payment.sponsorId || 'DIRECT')}
                         </td>
                         <td className="py-3 px-3 text-center">
                           {payment.status === 'approved' ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                               स्वीकृत
                             </span>
                           ) : payment.status === 'rejected' ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-red-500/20 text-red-300 text-[10px] font-bold">
-                              <XCircle className="w-3 h-3 text-red-400" />
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-bold border border-rose-200">
+                              <XCircle className="w-3 h-3 text-rose-600" />
                               अस्वीकृत
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold">
-                              <Clock className="w-3 h-3 text-amber-400" />
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+                              <Clock className="w-3 h-3 text-amber-600" />
                               लंबित
                             </span>
                           )}
@@ -3414,7 +3488,7 @@ export default function AdminPanel() {
                               <button
                                 type="button"
                                 onClick={() => handleApprovePayment(payment)}
-                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition flex items-center gap-1.5 shadow-sm cursor-pointer"
                                 title="भुगतान सत्यापन एवं 100% मैनुअल मानदेय वितरण तालिका खोलें"
                               >
                                 <CheckCircle2 className="w-3.5 h-3.5" />
@@ -3423,7 +3497,7 @@ export default function AdminPanel() {
                               <button
                                 type="button"
                                 onClick={() => handleRejectPayment(payment)}
-                                className="px-3 py-1.5 rounded-xl bg-red-900/60 hover:bg-red-800 text-red-300 text-xs transition"
+                                className="px-3 py-1.5 rounded-xl bg-rose-100 hover:bg-rose-200 text-rose-800 font-bold text-xs border border-rose-200 transition cursor-pointer"
                               >
                                 अस्वीकार
                               </button>
@@ -3472,17 +3546,17 @@ export default function AdminPanel() {
               {/* TOP COMMAND HEADER */}
               <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div>
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold mb-2">
-                    <Percent className="w-3.5 h-3.5 text-emerald-400" />
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold mb-2">
+                    <Percent className="w-3.5 h-3.5 text-emerald-600" />
                     <span>12-स्तरीय कमीशन एवं पेआउट कमांड सेंटर (Admin Only)</span>
                   </div>
-                  <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2">
+                  <h2 className="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-2">
                     <span>12-स्तरीय कमीशन एवं पेआउट मास्टर</span>
-                    <span className="text-xs px-2.5 py-1 rounded-lg bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-mono">
+                    <span className="text-xs px-2.5 py-1 rounded-lg bg-emerald-100 border border-emerald-200 text-emerald-800 font-mono">
                       Level 1 से 12
                     </span>
                   </h2>
-                  <p className="text-xs text-slate-400 mt-1 max-w-3xl">
+                  <p className="text-xs text-slate-500 mt-1 max-w-3xl">
                     कमीशन से लेकर पेआउट तक का संपूर्ण विवरण: 12-स्तरीय मानदेय दरें, लाइव पैकेज सिम्युलेटर, सदस्यवार कमीशन व पेआउट लेजर एवं तत्काल नकद/बैंक पेआउट निस्तारण।
                   </p>
                 </div>
@@ -3493,18 +3567,18 @@ export default function AdminPanel() {
                     onClick={() => setIsEditingRatesInTab(prev => !prev)}
                     className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
                       isEditingRatesInTab
-                        ? 'bg-amber-600 hover:bg-amber-500 text-slate-950 font-black ring-2 ring-amber-400'
-                        : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+                        ? 'bg-amber-500 hover:bg-amber-600 text-slate-950 font-black ring-2 ring-amber-300'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
                     }`}
                   >
-                    <Edit3 className="w-4 h-4 text-emerald-400" />
+                    <Edit3 className="w-4 h-4 text-emerald-600" />
                     <span>{isEditingRatesInTab ? 'संपादक बंद करें (Close)' : '12-स्तरीय दरें संपादित करें (Edit)'}</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setShowAddMemberModal(true)}
-                    className="px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs shadow-lg shadow-emerald-900/30 border border-emerald-400/30 transition flex items-center gap-2 cursor-pointer active:scale-95"
+                    className="px-4 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-sm border border-emerald-500 transition flex items-center gap-2 cursor-pointer active:scale-95"
                   >
                     <UserPlus className="w-4 h-4" />
                     <span>+ नया सदस्य जोड़ें</span>
@@ -3586,17 +3660,17 @@ export default function AdminPanel() {
               </div>
 
               {/* 4 COMMISSION SUB-NAVIGATION TABS */}
-              <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-700/80">
+              <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none border-b border-pink-200">
                 <button
                   type="button"
                   onClick={() => setCommissionSubTab('structure')}
                   className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
                     commissionSubTab === 'structure'
-                      ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
-                      : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'bg-white border border-pink-200 text-slate-700 hover:bg-pink-50'
                   }`}
                 >
-                  <Percent className="w-4 h-4 text-emerald-400" />
+                  <Percent className={`w-4 h-4 ${commissionSubTab === 'structure' ? 'text-white' : 'text-emerald-600'}`} />
                   <span>🎯 1. 12-स्तरीय दरें व लाइव कैलकुलेटर (Rates & Simulator)</span>
                 </button>
 
@@ -3605,13 +3679,15 @@ export default function AdminPanel() {
                   onClick={() => setCommissionSubTab('ledger')}
                   className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap relative cursor-pointer ${
                     commissionSubTab === 'ledger'
-                      ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
-                      : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'bg-white border border-pink-200 text-slate-700 hover:bg-pink-50'
                   }`}
                 >
-                  <Users className="w-4 h-4 text-blue-400" />
+                  <Users className={`w-4 h-4 ${commissionSubTab === 'ledger' ? 'text-white' : 'text-blue-600'}`} />
                   <span>👥 2. सदस्यवार कमीशन व पेआउट लेजर (Master Ledger)</span>
-                  <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 text-[10px] font-black">
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                    commissionSubTab === 'ledger' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-800'
+                  }`}>
                     {membersLedger.length}
                   </span>
                 </button>
@@ -3621,11 +3697,11 @@ export default function AdminPanel() {
                   onClick={() => setCommissionSubTab('pipeline')}
                   className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
                     commissionSubTab === 'pipeline'
-                      ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
-                      : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'bg-white border border-pink-200 text-slate-700 hover:bg-pink-50'
                   }`}
                 >
-                  <RefreshCw className="w-4 h-4 text-amber-400" />
+                  <RefreshCw className={`w-4 h-4 ${commissionSubTab === 'pipeline' ? 'text-white' : 'text-amber-600'}`} />
                   <span>🔄 3. कमीशन से पेआउट तक का चक्र (Workflow Flowchart)</span>
                 </button>
 
@@ -3634,14 +3710,16 @@ export default function AdminPanel() {
                   onClick={() => setCommissionSubTab('records')}
                   className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap relative cursor-pointer ${
                     commissionSubTab === 'records'
-                      ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
-                      : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                      ? 'bg-emerald-600 text-white shadow-md'
+                      : 'bg-white border border-pink-200 text-slate-700 hover:bg-pink-50'
                   }`}
                 >
-                  <FileText className="w-4 h-4 text-purple-400" />
+                  <FileText className={`w-4 h-4 ${commissionSubTab === 'records' ? 'text-white' : 'text-purple-600'}`} />
                   <span>📜 4. सदस्यता अनुसार वितरण लॉग (Activation Records)</span>
                   {payoutRecordsList.length > 0 && (
-                    <span className="px-1.5 py-0.2 rounded-full bg-purple-500/20 text-purple-300 text-[10px] font-bold">
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      commissionSubTab === 'records' ? 'bg-white/20 text-white' : 'bg-purple-100 text-purple-800'
+                    }`}>
                       {payoutRecordsList.length}
                     </span>
                   )}
@@ -3656,21 +3734,21 @@ export default function AdminPanel() {
                   
                   {/* Rates Configuration & Quick Save Box */}
                   <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-700 gap-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-pink-100 gap-3">
                       <div>
-                        <h3 className="text-base font-bold text-white flex items-center gap-2">
-                          <Percent className="w-5 h-5 text-emerald-400" />
+                        <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                          <Percent className="w-5 h-5 text-emerald-600" />
                           <span>सक्रिय 12-स्तरीय मानदेय प्रतिशत संरचना (Level 1 to 12 Structure)</span>
                         </h3>
-                        <p className="text-xs text-slate-400 mt-0.5">
+                        <p className="text-xs text-slate-500 mt-0.5">
                           यह दरें केवल सुपर एडमिन को दिखाई देती हैं। सार्वजनिक पेजों से यह पूर्णतः गुप्त हैं।
                         </p>
                       </div>
 
                       <div className="flex items-center gap-3">
                         {saveRatesSuccess && (
-                          <div className="px-3 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5 animate-pulse">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          <div className="px-3 py-1.5 rounded-xl bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                             <span>दरें रीयलटाइम में सुरक्षित हो गईं!</span>
                           </div>
                         )}
@@ -3679,7 +3757,7 @@ export default function AdminPanel() {
                           type="button"
                           onClick={handleSaveLevelRates}
                           disabled={isSavingRates}
-                          className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-900/30 transition cursor-pointer active:scale-95 disabled:opacity-50"
+                          className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition cursor-pointer active:scale-95 disabled:opacity-50"
                         >
                           {isSavingRates ? (
                             <>
@@ -3696,48 +3774,41 @@ export default function AdminPanel() {
                       </div>
                     </div>
 
-                    {/* Self Business Rate Strip */}
-                    <div className="p-4 bg-gradient-to-r from-purple-950/40 via-slate-900 to-indigo-950/40 rounded-2xl border border-purple-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    {/* Self Business Rate Strip (Fixed 0%) */}
+                    <div className="p-4 bg-purple-50 rounded-2xl border border-purple-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
-                        <h4 className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
-                          <Award className="w-4 h-4 text-purple-400" />
+                        <h4 className="text-xs font-bold text-purple-900 flex items-center gap-1.5">
+                          <Award className="w-4 h-4 text-purple-600" />
                           <span>सेल्फ बिज़नेस मानदेय (Self Business Commission)</span>
+                          <span className="px-2 py-0.5 rounded-full bg-purple-200 text-purple-900 text-[10px] font-black">0% Fixed</span>
                         </h4>
-                        <p className="text-[11px] text-slate-400 mt-0.5">
-                          सदस्य के स्वयं के पैकेज/योगदान पर मानदेय (डिफ़ॉल्ट 0% - नियमानुसार स्वयं के दान पर कमीशन शून्य)
+                        <p className="text-[11px] text-purple-700 mt-0.5">
+                          नियमानुसार स्वयं के दान/पैकेज पर कोई कमीशन नहीं है (0% Locked — केवल L1 से L12 तक 50% नेटवर्क मानदेय लागू)
                         </p>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <div className="relative w-32">
                           <input
                             type="number"
-                            step="0.1"
-                            min="0"
-                            max="100"
-                            disabled={!isEditingRatesInTab}
-                            value={selfBusinessRate !== undefined ? selfBusinessRate : 0}
-                            onChange={(e) => setSelfBusinessRate(e.target.value)}
-                            placeholder="0"
-                            className={`w-full px-3 py-2 pr-7 rounded-xl font-mono font-bold text-xs outline-none transition ${
-                              isEditingRatesInTab
-                                ? 'bg-slate-800 border border-purple-400 text-white focus:ring-2 focus:ring-purple-500'
-                                : 'bg-slate-900/80 border border-purple-500/30 text-purple-300 cursor-not-allowed'
-                            }`}
+                            disabled
+                            value={0}
+                            readOnly
+                            className="w-full px-3 py-2 pr-7 rounded-xl font-mono font-bold text-xs outline-none bg-white border border-purple-200 text-purple-800 cursor-not-allowed"
                           />
-                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-purple-300 font-bold text-xs">%</span>
+                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-purple-700 font-bold text-xs">%</span>
                         </div>
                       </div>
                     </div>
 
                     {/* 12 Levels Grid */}
                     <div>
-                      <div className="text-xs font-bold text-slate-300 mb-2 flex items-center justify-between">
+                      <div className="text-xs font-bold text-slate-800 mb-2 flex flex-wrap items-center justify-between gap-2">
                         <span className="flex items-center gap-1.5">
-                          <Percent className="w-3.5 h-3.5 text-emerald-400" />
+                          <Percent className="w-3.5 h-3.5 text-emerald-600" />
                           <span>स्तर 1 से 12 तक की मानदेय दरें (Level 1 to 12 Rates):</span>
                         </span>
-                        <span className="text-[11px] text-slate-400 font-mono">
-                          कुल नेटवर्क कमीशन: <strong className="text-emerald-400">{simTotalDistributedRate}%</strong> | ट्रस्ट शेयर: <strong className="text-purple-400">{simTrustShareRate}%</strong>
+                        <span className="text-[11px] text-slate-600 font-mono">
+                          कुल नेटवर्क कमीशन: <strong className="text-emerald-700">{simTotalDistributedRate}%</strong> | ट्रस्ट शेयर: <strong className="text-purple-700">{simTrustShareRate}%</strong>
                         </span>
                       </div>
 
@@ -3750,12 +3821,12 @@ export default function AdminPanel() {
                               key={lvl} 
                               className={`p-3 rounded-2xl border transition-all ${
                                 isDirect 
-                                  ? 'bg-blue-950/30 border-blue-500/40 shadow-sm shadow-blue-500/10' 
-                                  : 'bg-slate-900/90 border-slate-700/80'
+                                  ? 'bg-blue-50 border-blue-200 shadow-xs' 
+                                  : 'bg-slate-50 border-slate-200'
                               }`}
                             >
-                              <div className="flex items-center justify-between text-xs font-bold pb-1 mb-1 border-b border-slate-800">
-                                <span className={isDirect ? 'text-blue-300' : 'text-slate-300'}>
+                              <div className="flex items-center justify-between text-xs font-bold pb-1 mb-1 border-b border-slate-200">
+                                <span className={isDirect ? 'text-blue-900' : 'text-slate-800'}>
                                   L{lvl} {isDirect ? '(डायरेक्ट)' : ''}
                                 </span>
                                 <span className="text-[10px] text-slate-500 font-mono">
@@ -3775,16 +3846,16 @@ export default function AdminPanel() {
                                   placeholder="0"
                                   className={`w-full px-2.5 py-1.5 pr-6 rounded-xl font-mono font-black text-xs outline-none transition ${
                                     isEditingRatesInTab
-                                      ? 'bg-slate-800 border border-emerald-500 text-white focus:ring-2 focus:ring-emerald-400'
-                                      : 'bg-slate-950 border border-slate-800 text-emerald-400 cursor-not-allowed'
+                                      ? 'bg-white border border-emerald-500 text-slate-900 focus:ring-2 focus:ring-emerald-400'
+                                      : 'bg-white border border-slate-200 text-emerald-700 cursor-not-allowed'
                                   }`}
                                 />
-                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">%</span>
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-xs">%</span>
                               </div>
 
-                              <div className="mt-1 text-[10px] text-slate-400 font-mono flex items-center justify-between">
+                              <div className="mt-1 text-[10px] text-slate-600 font-mono flex items-center justify-between">
                                 <span>₹{simPkg} पर:</span>
-                                <strong className={isDirect ? 'text-blue-300' : 'text-emerald-400'}>
+                                <strong className={isDirect ? 'text-blue-800' : 'text-emerald-700'}>
                                   {formatINR(round2((simPkg * Number(currentVal || 0)) / 100))}
                                 </strong>
                               </div>
@@ -3798,16 +3869,16 @@ export default function AdminPanel() {
 
                   {/* INTERACTIVE LIVE PACKAGE COMMISSION SIMULATOR */}
                   <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-6">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-700 gap-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-pink-100 gap-3">
                       <div>
-                        <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-blue-500/15 border border-blue-500/30 text-blue-300 text-xs font-bold mb-1.5">
-                          <Zap className="w-3.5 h-3.5 text-blue-400" />
+                        <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-800 text-xs font-bold mb-1.5">
+                          <Zap className="w-3.5 h-3.5 text-blue-600" />
                           <span>रीयलटाइम कैलकुलेटर (Live Calculator)</span>
                         </div>
-                        <h3 className="text-base font-black text-white">
+                        <h3 className="text-base font-black text-slate-900">
                           पैकेज अनुसार 12-स्तरीय कमीशन एवं ट्रस्ट शेयर सिमुलेटर
                         </h3>
-                        <p className="text-xs text-slate-400 mt-0.5">
+                        <p className="text-xs text-slate-500 mt-0.5">
                           किसी भी पैकेज या कस्टम राशि का चयन करें और देखें कि हर स्तर (L1 से L12) और ट्रस्ट को कितनी राशि जाएगी।
                         </p>
                       </div>
@@ -3825,7 +3896,7 @@ export default function AdminPanel() {
                             className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-extrabold transition cursor-pointer ${
                               simPackageAmount === amt && !simCustomInput
                                 ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md ring-2 ring-emerald-400/50'
-                                : 'bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700'
+                                : 'bg-slate-100 border border-slate-300 text-slate-800 hover:bg-slate-200'
                             }`}
                           >
                             ₹{amt}
@@ -3844,7 +3915,7 @@ export default function AdminPanel() {
                                 setSimPackageAmount(Number(v));
                               }
                             }}
-                            className="w-full px-2.5 py-1.5 pl-5 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:ring-2 focus:ring-emerald-500 outline-none placeholder-slate-500"
+                            className="w-full px-2.5 py-1.5 pl-5 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 font-mono text-xs focus:ring-2 focus:ring-emerald-500 outline-none placeholder-slate-400"
                           />
                           <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-xs font-bold">₹</span>
                         </div>
@@ -3855,49 +3926,49 @@ export default function AdminPanel() {
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       
                       {/* Segment 1: Direct Commission (L1) */}
-                      <div className="p-5 rounded-2xl bg-blue-950/30 border border-blue-500/40 shadow">
-                        <div className="flex items-center justify-between text-blue-400 mb-1">
+                      <div className="p-5 rounded-2xl bg-blue-50 border border-blue-200 shadow-xs">
+                        <div className="flex items-center justify-between text-blue-800 mb-1">
                           <span className="text-xs font-bold uppercase tracking-wider">1. डायरेक्ट कमीशन (Level 1)</span>
-                          <span className="px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-300 font-mono text-[11px] font-bold">
+                          <span className="px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 font-mono text-[11px] font-bold">
                             {simDirectRate}%
                           </span>
                         </div>
-                        <div className="text-2xl font-black text-white font-mono mt-1">
+                        <div className="text-2xl font-black text-slate-900 font-mono mt-1">
                           {formatINR(simDirectAmt)}
                         </div>
-                        <p className="text-[11px] text-blue-300/80 mt-1">
+                        <p className="text-[11px] text-blue-700 mt-1">
                           सीधे जोड़ने वाले प्रायोजक (Direct Sponsor) को तत्काल क्रेडिट
                         </p>
                       </div>
 
                       {/* Segment 2: Downline Commission (L2-L12) */}
-                      <div className="p-5 rounded-2xl bg-amber-950/30 border border-amber-500/40 shadow">
-                        <div className="flex items-center justify-between text-amber-400 mb-1">
+                      <div className="p-5 rounded-2xl bg-amber-50 border border-amber-200 shadow-xs">
+                        <div className="flex items-center justify-between text-amber-900 mb-1">
                           <span className="text-xs font-bold uppercase tracking-wider">2. डाउनलाइन कमीशन (L2–L12)</span>
-                          <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-mono text-[11px] font-bold">
+                          <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-800 font-mono text-[11px] font-bold">
                             {simDownlineRate}%
                           </span>
                         </div>
-                        <div className="text-2xl font-black text-white font-mono mt-1">
+                        <div className="text-2xl font-black text-slate-900 font-mono mt-1">
                           {formatINR(simDownlineAmt)}
                         </div>
-                        <p className="text-[11px] text-amber-300/80 mt-1">
+                        <p className="text-[11px] text-amber-800 mt-1">
                           स्तर 2 से स्तर 12 तक के समस्त अपलाइन मार्गदर्शकों में विभाजित
                         </p>
                       </div>
 
                       {/* Segment 3: Trust Welfare Retained Share */}
-                      <div className="p-5 rounded-2xl bg-purple-950/30 border border-purple-500/40 shadow">
-                        <div className="flex items-center justify-between text-purple-400 mb-1">
+                      <div className="p-5 rounded-2xl bg-purple-50 border border-purple-200 shadow-xs">
+                        <div className="flex items-center justify-between text-purple-900 mb-1">
                           <span className="text-xs font-bold uppercase tracking-wider">3. ट्रस्ट जनकल्याण शेयर</span>
-                          <span className="px-2 py-0.5 rounded-md bg-purple-500/20 text-purple-300 font-mono text-[11px] font-bold">
+                          <span className="px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 font-mono text-[11px] font-bold">
                             {simTrustShareRate}%
                           </span>
                         </div>
-                        <div className="text-2xl font-black text-purple-300 font-mono mt-1">
+                        <div className="text-2xl font-black text-purple-900 font-mono mt-1">
                           {formatINR(simTrustShareAmt)}
                         </div>
-                        <p className="text-[11px] text-purple-300/80 mt-1">
+                        <p className="text-[11px] text-purple-700 mt-1">
                           कमीशन भुगतान उपरांत जनहित एवं परोपकार कार्यों हेतु सुरक्षित
                         </p>
                       </div>
@@ -3906,13 +3977,13 @@ export default function AdminPanel() {
 
                     {/* Progress Bar of Distribution */}
                     <div className="space-y-1.5">
-                      <div className="flex items-center justify-between text-xs font-bold">
-                        <span className="text-slate-300">पैकेज राशि ₹{simPkg} का संपूर्ण विभाजन प्रतिशत:</span>
-                        <span className="font-mono text-emerald-400">
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+                        <span className="text-slate-700">पैकेज राशि ₹{simPkg} का संपूर्ण विभाजन प्रतिशत:</span>
+                        <span className="font-mono text-emerald-700">
                           कमीशन {simTotalDistributedRate}% ({formatINR(simTotalDistributed)}) + ट्रस्ट {simTrustShareRate}% ({formatINR(simTrustShareAmt)}) = 100%
                         </span>
                       </div>
-                      <div className="h-3 w-full bg-slate-900 rounded-full overflow-hidden flex border border-slate-700">
+                      <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden flex border border-slate-200">
                         <div 
                           style={{ width: `${simDirectRate}%` }} 
                           className="bg-blue-500 h-full transition-all" 
@@ -3932,7 +4003,7 @@ export default function AdminPanel() {
                     </div>
 
                     {/* Full 12-Level Breakdown Simulation Table */}
-                    <div className="overflow-x-auto rounded-2xl border border-slate-700">
+                    <div className="overflow-x-auto rounded-2xl border border-pink-200">
                       <table className="w-full text-left text-xs border-collapse">
                         <thead className="bg-pink-50/80 text-slate-700 font-bold border-b border-pink-200">
                           <tr>
@@ -3943,16 +4014,16 @@ export default function AdminPanel() {
                             <th className="py-3 px-3 text-center">वितरण प्रकार</th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y divide-pink-100 font-medium">
+                        <tbody className="divide-y divide-pink-100 font-medium bg-white">
                           {/* Self Business Row */}
-                          <tr className="bg-purple-950/15 hover:bg-purple-950/30 transition-colors">
-                            <td className="py-3 px-3 font-mono font-bold text-purple-300">सेल्फ (Self)</td>
-                            <td className="py-3 px-3 font-bold text-white">सदस्य स्वयं (Self Business Incentive)</td>
-                            <td className="py-3 px-3 text-center font-mono font-black text-purple-400">{simSelfRate}%</td>
-                            <td className="py-3 px-3 text-right font-mono font-black text-purple-300">+{formatINR(simSelfAmt)}</td>
+                          <tr className="bg-purple-50/60 hover:bg-purple-50 transition-colors">
+                            <td className="py-3 px-3 font-mono font-bold text-purple-800">सेल्फ (Self)</td>
+                            <td className="py-3 px-3 font-bold text-slate-900">सदस्य स्वयं (Self Business — Fixed 0%)</td>
+                            <td className="py-3 px-3 text-center font-mono font-black text-purple-800">{simSelfRate}%</td>
+                            <td className="py-3 px-3 text-right font-mono font-black text-purple-800">+{formatINR(simSelfAmt)}</td>
                             <td className="py-3 px-3 text-center">
-                              <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 text-[10px] font-bold">
-                                स्वयं का प्रोत्साहन
+                              <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 text-[10px] font-bold">
+                                नियमानुसार 0%
                               </span>
                             </td>
                           </tr>
@@ -3963,36 +4034,36 @@ export default function AdminPanel() {
                             return (
                               <tr 
                                 key={r.level} 
-                                className={`hover:bg-slate-700/30 transition-colors ${
-                                  isL1 ? 'bg-blue-950/10 font-bold' : ''
+                                className={`hover:bg-pink-50/40 transition-colors ${
+                                  isL1 ? 'bg-blue-50/60 font-bold' : ''
                                 }`}
                               >
                                 <td className="py-3 px-3 font-mono">
                                   <span className={`px-2 py-0.5 rounded-md text-[11px] font-black ${
-                                    isL1 ? 'bg-blue-500/20 text-blue-300 border border-blue-400/30' : 'bg-slate-900 text-slate-300'
+                                    isL1 ? 'bg-blue-100 text-blue-800 border border-blue-200' : 'bg-slate-100 text-slate-800'
                                   }`}>
                                     L{r.level}
                                   </span>
                                 </td>
                                 <td className="py-3 px-3">
-                                  <div className="text-white text-xs">
+                                  <div className="text-slate-900 text-xs font-semibold">
                                     {isL1 ? 'प्रत्यक्ष प्रायोजक (Direct Sponsor)' : `स्तर ${r.level} अपलाइन मार्गदर्शक`}
                                   </div>
                                   <div className="text-[10px] text-slate-500 font-mono">
                                     {isL1 ? 'Immediate Upline Sponsor' : `${r.level - 1} Degree Indirect Upline`}
                                   </div>
                                 </td>
-                                <td className="py-3 px-3 text-center font-mono font-black text-emerald-400">
+                                <td className="py-3 px-3 text-center font-mono font-black text-emerald-700">
                                   {r.rate}%
                                 </td>
-                                <td className="py-3 px-3 text-right font-mono font-black text-white">
-                                  <span className={isL1 ? 'text-blue-300' : 'text-emerald-400'}>
+                                <td className="py-3 px-3 text-right font-mono font-black">
+                                  <span className={isL1 ? 'text-blue-800' : 'text-emerald-700'}>
                                     +{formatINR(r.amount)}
                                   </span>
                                 </td>
                                 <td className="py-3 px-3 text-center whitespace-nowrap">
                                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                    isL1 ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-900 text-slate-400'
+                                    isL1 ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-700'
                                   }`}>
                                     {isL1 ? 'डायरेक्ट मानदेय' : `डाउनलाइन L${r.level}`}
                                   </span>
@@ -4002,20 +4073,20 @@ export default function AdminPanel() {
                           })}
 
                           {/* Trust Share Summary Row */}
-                          <tr className="bg-emerald-950/20 border-t-2 border-slate-600 font-bold">
-                            <td className="py-3.5 px-3 font-mono text-emerald-300">ट्रस्ट (Trust)</td>
-                            <td className="py-3.5 px-3 text-white">
+                          <tr className="bg-emerald-50 border-t-2 border-emerald-200 font-bold">
+                            <td className="py-3.5 px-3 font-mono text-emerald-800">ट्रस्ट (Trust)</td>
+                            <td className="py-3.5 px-3 text-slate-900">
                               <div>उत्तम चैरिटेबल वेलफेयर फाउंडेशन जनसेवा खाता</div>
-                              <div className="text-[10px] text-slate-400 font-mono">Net Retained for Social Charity & Welfare Work</div>
+                              <div className="text-[10px] text-slate-500 font-mono">Net Retained for Social Charity & Welfare Work</div>
                             </td>
-                            <td className="py-3.5 px-3 text-center font-mono font-black text-emerald-300">
+                            <td className="py-3.5 px-3 text-center font-mono font-black text-emerald-800">
                               {simTrustShareRate}%
                             </td>
-                            <td className="py-3.5 px-3 text-right font-mono font-black text-emerald-300 text-sm">
+                            <td className="py-3.5 px-3 text-right font-mono font-black text-emerald-800 text-sm">
                               +{formatINR(simTrustShareAmt)}
                             </td>
                             <td className="py-3.5 px-3 text-center">
-                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-black">
+                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-black border border-emerald-200">
                                 जनसेवा सुरक्षित फंड
                               </span>
                             </td>
@@ -4037,27 +4108,27 @@ export default function AdminPanel() {
                 <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
                   
                   {/* Ledger Header & Search */}
-                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-700">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-pink-100">
                     <div>
-                      <h3 className="text-base font-black text-white flex items-center gap-2">
-                        <Users className="w-5 h-5 text-blue-400" />
+                      <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                        <Users className="w-5 h-5 text-blue-600" />
                         <span>सदस्यवार 12-स्तरीय कमीशन एवं पेआउट मास्टर लेजर</span>
                       </h3>
-                      <p className="text-xs text-slate-400 mt-0.5">
+                      <p className="text-xs text-slate-500 mt-0.5">
                         प्रत्येक सदस्य का 12-स्तरीय बिज़नेस, डायरेक्ट व डाउनलाइन कमीशन, प्राप्त पेआउट, और देय राशि
                       </p>
                     </div>
 
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
                       {/* Filter Buttons */}
-                      <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-700">
+                      <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
                         <button
                           type="button"
                           onClick={() => setLedgerFilter('ALL')}
                           className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                             ledgerFilter === 'ALL'
                               ? 'bg-emerald-600 text-white'
-                              : 'text-slate-400 hover:text-white'
+                              : 'text-slate-600 hover:text-slate-900'
                           }`}
                         >
                           सभी ({Object.keys(users).length})
@@ -4067,8 +4138,8 @@ export default function AdminPanel() {
                           onClick={() => setLedgerFilter('PAYABLE')}
                           className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                             ledgerFilter === 'PAYABLE'
-                              ? 'bg-amber-600 text-slate-950 font-black'
-                              : 'text-slate-400 hover:text-white'
+                              ? 'bg-amber-500 text-slate-950 font-black'
+                              : 'text-slate-600 hover:text-slate-900'
                           }`}
                         >
                           देय पेआउट ({membersLedger.filter(m => m.netPayable > 0).length})
@@ -4079,7 +4150,7 @@ export default function AdminPanel() {
                           className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                             ledgerFilter === 'SETTLED'
                               ? 'bg-blue-600 text-white'
-                              : 'text-slate-400 hover:text-white'
+                              : 'text-slate-600 hover:text-slate-900'
                           }`}
                         >
                           निस्तारित
@@ -4094,13 +4165,13 @@ export default function AdminPanel() {
                           value={ledgerSearch}
                           onChange={(e) => setLedgerSearch(e.target.value)}
                           placeholder="सदस्य नाम, आईडी या फोन..."
-                          className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 text-xs focus:ring-2 focus:ring-emerald-500 outline-none"
+                          className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs focus:ring-2 focus:ring-emerald-500 outline-none"
                         />
                         {ledgerSearch && (
                           <button
                             type="button"
                             onClick={() => setLedgerSearch('')}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
                           >
                             <X className="w-3.5 h-3.5" />
                           </button>
@@ -4111,8 +4182,8 @@ export default function AdminPanel() {
 
                   {/* Master Ledger Table */}
                   {membersLedger.length === 0 ? (
-                    <div className="py-16 text-center text-xs text-slate-400 space-y-2">
-                      <Users className="w-8 h-8 text-slate-600 mx-auto" />
+                    <div className="py-16 text-center text-xs text-slate-500 space-y-2">
+                      <Users className="w-8 h-8 text-slate-400 mx-auto" />
                       <p>कोई सदस्य रिकॉर्ड उपलब्ध नहीं है।</p>
                     </div>
                   ) : (
@@ -4124,11 +4195,11 @@ export default function AdminPanel() {
                             <th className="py-3 px-3">स्पॉन्सर विवरण</th>
                             <th className="py-3 px-3 text-center">पैकेज (₹)</th>
                             <th className="py-3 px-3 text-right">12-स्तरीय बिज़नेस</th>
-                            <th className="py-3 px-3 text-right bg-emerald-950/20 text-emerald-300">
+                            <th className="py-3 px-3 text-right bg-emerald-50 text-emerald-900">
                               कुल अर्जित कमीशन
                             </th>
                             <th className="py-3 px-3 text-right">प्राप्त पेआउट</th>
-                            <th className="py-3 px-3 text-right bg-amber-950/20 text-amber-300">
+                            <th className="py-3 px-3 text-right bg-amber-50 text-amber-900">
                               शुद्ध देय पेआउट (Wallet)
                             </th>
                             <th className="py-3 px-3 text-center">पेआउट स्थिति</th>
@@ -4143,20 +4214,20 @@ export default function AdminPanel() {
                                 
                                 {/* Member Info */}
                                 <td className="py-3.5 px-3">
-                                  <div className="font-bold text-white text-xs">
+                                  <div className="font-bold text-slate-900 text-xs">
                                     {m.salutation || ''} {m.name}
                                   </div>
-                                  <div className="text-[11px] font-mono font-bold text-emerald-400">
+                                  <div className="text-[11px] font-mono font-bold text-emerald-700">
                                     {m.memberId || 'N/A'}
                                   </div>
-                                  <div className="text-[10px] text-slate-400 font-mono">
+                                  <div className="text-[10px] text-slate-500 font-mono">
                                     {m.phone || 'N/A'} {m.designation ? `• ${m.designation}` : ''}
                                   </div>
                                 </td>
 
                                 {/* Sponsor Info */}
                                 <td className="py-3.5 px-3">
-                                  <div className="font-mono text-slate-300 text-[11px] font-bold">
+                                  <div className="font-mono text-slate-800 text-[11px] font-bold">
                                     {m.sponsorId || 'DIRECT'}
                                   </div>
                                   <div className="text-[10px] text-slate-500">
@@ -4165,16 +4236,16 @@ export default function AdminPanel() {
                                 </td>
 
                                 {/* Package */}
-                                <td className="py-3.5 px-3 text-center font-mono font-bold text-white">
+                                <td className="py-3.5 px-3 text-center font-mono font-bold text-slate-900">
                                   {formatINR(m.packageAmount)}
                                 </td>
 
                                 {/* 12-Level Business Volume */}
                                 <td className="py-3.5 px-3 text-right font-mono">
-                                  <div className="text-white font-bold">
+                                  <div className="text-slate-900 font-bold">
                                     कुल: {formatINR(m.teamBusiness)}
                                   </div>
-                                  <div className="text-[10px] text-slate-400">
+                                  <div className="text-[10px] text-slate-600">
                                     डायरेक्ट: {formatINR(m.directBusiness)}
                                   </div>
                                   <div className="text-[10px] text-slate-500">
@@ -4183,30 +4254,30 @@ export default function AdminPanel() {
                                 </td>
 
                                 {/* Earned Commission */}
-                                <td className="py-3.5 px-3 text-right font-mono bg-emerald-950/10">
-                                  <div className="text-emerald-300 font-black text-sm">
+                                <td className="py-3.5 px-3 text-right font-mono bg-emerald-50/60">
+                                  <div className="text-emerald-800 font-black text-sm">
                                     +{formatINR(m.totalCommission)}
                                   </div>
-                                  <div className="text-[10px] text-blue-300">
+                                  <div className="text-[10px] text-blue-700">
                                     L1 डायरेक्ट: +{formatINR(m.directCommission)}
                                   </div>
-                                  <div className="text-[10px] text-amber-300">
+                                  <div className="text-[10px] text-amber-800">
                                     L2-12 डाउन.: +{formatINR(m.downlineCommission)}
                                   </div>
                                 </td>
 
                                 {/* Total Paid Out */}
-                                <td className="py-3.5 px-3 text-right font-mono text-slate-300 font-bold">
+                                <td className="py-3.5 px-3 text-right font-mono text-slate-700 font-bold">
                                   {formatINR(m.totalWithdrawn)}
                                 </td>
 
                                 {/* Net Payable Wallet Balance */}
-                                <td className="py-3.5 px-3 text-right font-mono bg-amber-950/10">
-                                  <div className={`text-sm font-black ${hasPayable ? 'text-amber-300' : 'text-slate-500'}`}>
+                                <td className="py-3.5 px-3 text-right font-mono bg-amber-50/60">
+                                  <div className={`text-sm font-black ${hasPayable ? 'text-amber-800' : 'text-slate-500'}`}>
                                     {formatINR(m.netPayable)}
                                   </div>
                                   {hasPayable && (
-                                    <div className="text-[9px] text-amber-400/90 font-bold uppercase">
+                                    <div className="text-[9px] text-amber-700 font-bold uppercase">
                                       तत्काल निकासी योग्य
                                     </div>
                                   )}
@@ -4215,13 +4286,13 @@ export default function AdminPanel() {
                                 {/* Status */}
                                 <td className="py-3.5 px-3 text-center whitespace-nowrap">
                                   {hasPayable ? (
-                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30">
-                                      <Clock className="w-3 h-3 text-amber-400" />
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+                                      <Clock className="w-3 h-3 text-amber-600" />
                                       <span>देय पेआउट शेष</span>
                                     </span>
                                   ) : m.totalCommission > 0 ? (
-                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                                       <span>पूर्ण निस्तारित</span>
                                     </span>
                                   ) : (
@@ -4249,10 +4320,10 @@ export default function AdminPanel() {
                                     <button
                                       type="button"
                                       onClick={() => handleOpenManualCommissionModal(m, 'member')}
-                                      className="px-2.5 py-1.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-[11px] font-bold transition cursor-pointer flex items-center gap-1"
+                                      className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-[11px] font-bold transition cursor-pointer flex items-center gap-1"
                                       title="12-स्तरीय अपलाइन एवं मानदेय वितरण जांचें"
                                     >
-                                      <Users className="w-3.5 h-3.5 text-blue-400" />
+                                      <Users className="w-3.5 h-3.5 text-blue-600" />
                                       <span>12 अपलाइन</span>
                                     </button>
 
@@ -4277,11 +4348,11 @@ export default function AdminPanel() {
               {commissionSubTab === 'pipeline' && (
                 <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-6">
                   <div>
-                    <h3 className="text-base font-black text-white flex items-center gap-2">
-                      <RefreshCw className="w-5 h-5 text-amber-400" />
+                    <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                      <RefreshCw className="w-5 h-5 text-amber-600" />
                       <span>कमीशन से पेआउट तक का संपूर्ण चक्र (End-to-End Workflow Pipeline)</span>
                     </h3>
-                    <p className="text-xs text-slate-400 mt-1">
+                    <p className="text-xs text-slate-500 mt-1">
                       उत्तम फाउंडेशन सॉफ्टवेयर में सदस्य के जुड़ने से लेकर उसके अंतिम पेआउट भुगतान तक का पूर्णतः पारदर्शी 5-चरणीय चक्र:
                     </p>
                   </div>
@@ -4386,13 +4457,13 @@ export default function AdminPanel() {
               {/* ============================================================== */}
               {commissionSubTab === 'records' && (
                 <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-700">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-pink-100">
                     <div>
-                      <h3 className="text-base font-bold text-white flex items-center gap-2">
-                        <FileText className="w-5 h-5 text-purple-400" />
+                      <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                        <FileText className="w-5 h-5 text-purple-600" />
                         <span>सदस्यता सक्रियण अनुसार कमीशन एवं ट्रस्ट शेयर लॉग (Audit Log)</span>
                       </h3>
-                      <p className="text-xs text-slate-400 mt-0.5">
+                      <p className="text-xs text-slate-500 mt-0.5">
                         प्रत्येक सदस्य के शामिल होने पर डायरेक्ट, डाउनलाइन एवं ट्रस्ट शेयर का वास्तविक ऐतिहासिक रिकॉर्ड
                       </p>
                     </div>
@@ -4404,13 +4475,13 @@ export default function AdminPanel() {
                         value={payoutSearch}
                         onChange={(e) => setPayoutSearch(e.target.value)}
                         placeholder="सदस्य नाम, आईडी या ट्रांस आईडी..."
-                        className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 text-xs focus:ring-2 focus:ring-emerald-500 outline-none"
+                        className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 placeholder-slate-400 text-xs focus:ring-2 focus:ring-emerald-500 outline-none"
                       />
                       {payoutSearch && (
                         <button
                           type="button"
                           onClick={() => setPayoutSearch('')}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -4420,10 +4491,10 @@ export default function AdminPanel() {
 
                   {payoutRecordsList.length === 0 ? (
                     <div className="py-14 text-center space-y-3">
-                      <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-700 flex items-center justify-center mx-auto text-slate-500">
+                      <div className="w-12 h-12 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center mx-auto text-slate-500">
                         <IndianRupee className="w-6 h-6" />
                       </div>
-                      <div className="text-xs text-slate-400 max-w-md mx-auto">
+                      <div className="text-xs text-slate-500 max-w-md mx-auto">
                         {payoutSearch ? (
                           <span>&quot;{payoutSearch}&quot; से मेल खाता कोई रिकॉर्ड नहीं मिला।</span>
                         ) : (
@@ -4436,7 +4507,7 @@ export default function AdminPanel() {
                         <button
                           type="button"
                           onClick={() => setShowAddMemberModal(true)}
-                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-emerald-900/30 cursor-pointer"
+                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer"
                         >
                           + नया सदस्य जोड़ें एवं कमीशन वितरित करें
                         </button>
@@ -4450,13 +4521,13 @@ export default function AdminPanel() {
                             <th className="py-3 px-3">दिनांक व समय</th>
                             <th className="py-3 px-3">सदस्य विवरण</th>
                             <th className="py-3 px-3 text-right">पैकेज राशि</th>
-                            <th className="py-3 px-3 text-right bg-blue-950/20 text-blue-300">
+                            <th className="py-3 px-3 text-right bg-blue-50 text-blue-900">
                               डायरेक्ट कमीशन (L1)
                             </th>
-                            <th className="py-3 px-3 text-right bg-amber-950/20 text-amber-300">
+                            <th className="py-3 px-3 text-right bg-amber-50 text-amber-900">
                               डाउनलाइन कमीशन (L2-12)
                             </th>
-                            <th className="py-3 px-3 text-right bg-purple-950/20 text-purple-300">
+                            <th className="py-3 px-3 text-right bg-purple-50 text-purple-900">
                               ट्रस्ट का हिस्सा
                             </th>
                             <th className="py-3 px-3 text-center">स्थिति</th>
@@ -4465,33 +4536,33 @@ export default function AdminPanel() {
                         <tbody className="divide-y divide-pink-100 font-medium">
                           {payoutRecordsList.map((rec) => (
                             <tr key={rec.id} className="hover:bg-pink-50/40 transition-colors">
-                              <td className="py-3.5 px-3 whitespace-nowrap text-slate-400 font-mono text-[11px]">
+                              <td className="py-3.5 px-3 whitespace-nowrap text-slate-600 font-mono text-[11px]">
                                 {rec.createdAt || (rec.timestamp ? new Date(rec.timestamp).toLocaleString('en-IN') : 'N/A')}
                                 <div className="text-[9px] text-slate-500 font-mono">{rec.id}</div>
                               </td>
                               <td className="py-3.5 px-3">
-                                <div className="font-bold text-white text-xs">
+                                <div className="font-bold text-slate-900 text-xs">
                                   {rec.sourceMemberName || 'सदस्य'}
                                 </div>
-                                <div className="text-[11px] font-mono text-emerald-400">
+                                <div className="text-[11px] font-mono font-bold text-emerald-700">
                                   {rec.sourceMemberId || 'N/A'}
                                 </div>
                               </td>
-                              <td className="py-3.5 px-3 text-right font-mono font-bold text-white">
+                              <td className="py-3.5 px-3 text-right font-mono font-bold text-slate-900">
                                 {formatINR(rec.packageAmount || 0)}
                               </td>
-                              <td className="py-3.5 px-3 text-right font-mono font-bold text-blue-400 bg-blue-950/10">
+                              <td className="py-3.5 px-3 text-right font-mono font-bold text-blue-800 bg-blue-50/60">
                                 +{formatINR(rec.directCommission || 0)}
                               </td>
-                              <td className="py-3.5 px-3 text-right font-mono font-bold text-amber-400 bg-amber-950/10">
+                              <td className="py-3.5 px-3 text-right font-mono font-bold text-amber-800 bg-amber-50/60">
                                 +{formatINR(rec.downlineCommission || 0)}
                               </td>
-                              <td className="py-3.5 px-3 text-right font-mono font-bold text-purple-400 bg-purple-950/10">
+                              <td className="py-3.5 px-3 text-right font-mono font-bold text-purple-800 bg-purple-50/60">
                                 +{formatINR(rec.trustShare || 0)}
                               </td>
                               <td className="py-3.5 px-3 text-center whitespace-nowrap">
-                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                                  <CheckCircle2 className="w-3 h-3" />
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                                   <span>वितरित / सक्रिय</span>
                                 </span>
                               </td>
@@ -4512,17 +4583,17 @@ export default function AdminPanel() {
         {activeTab === 'withdrawals' && (
           <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
             <div>
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                <IndianRupee className="w-5 h-5 text-emerald-400" />
+              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                <IndianRupee className="w-5 h-5 text-emerald-600" />
                 <span>मानदेय निकासी अनुरोध (Withdrawal Requests)</span>
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-slate-500 mt-0.5">
                 सदस्यों द्वारा किए गए बैंक व UPI निकासी अनुरोधों का सत्यापन एवं भुगतान
               </p>
             </div>
 
             {withdrawalsList.length === 0 ? (
-              <div className="py-16 text-center text-xs text-slate-400">
+              <div className="py-16 text-center text-xs text-slate-500">
                 कोई निकासी अनुरोध दर्ज नहीं है।
               </div>
             ) : (
@@ -4542,55 +4613,55 @@ export default function AdminPanel() {
                   <tbody className="divide-y divide-pink-100">
                     {withdrawalsList.map((w) => (
                       <tr key={w.id} className="hover:bg-pink-50/40">
-                        <td className="py-3 px-3 text-slate-400 whitespace-nowrap">
+                        <td className="py-3 px-3 text-slate-600 whitespace-nowrap">
                           {w.createdAt ? new Date(w.createdAt).toLocaleDateString('hi-IN') : '-'}
                         </td>
                         <td className="py-3 px-3">
-                          <p className="font-bold text-white">{safeText(w.userName)}</p>
-                          <p className="text-[10px] font-mono text-emerald-400">{safeText(w.memberId)}</p>
-                          {w.phone && <p className="text-[10px] text-slate-400 font-mono">फोन: {w.phone}</p>}
+                          <p className="font-bold text-slate-900">{safeText(w.userName)}</p>
+                          <p className="text-[10px] font-mono font-bold text-emerald-700">{safeText(w.memberId)}</p>
+                          {w.phone && <p className="text-[10px] text-slate-500 font-mono">फोन: {w.phone}</p>}
                         </td>
-                        <td className="py-3 px-3 font-bold text-white font-mono text-sm">
+                        <td className="py-3 px-3 font-bold text-slate-900 font-mono text-sm">
                           {formatINR(w.amount || 0)}
                         </td>
                         <td className="py-3 px-3">
                           {w.payoutMode === 'cash' || w.bankName?.includes('नकद') ? (
-                            <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-black inline-flex items-center gap-1">
+                            <span className="px-2.5 py-1 rounded-full bg-emerald-100 border border-emerald-200 text-emerald-800 text-[10px] font-black inline-flex items-center gap-1">
                               <span>💵 नकद / कार्यालय भुगतान</span>
                             </span>
                           ) : (
-                            <span className="font-mono text-amber-300 text-xs">
+                            <span className="font-mono font-bold text-amber-800 text-xs">
                               {safeText(w.upiId || '-')}
                             </span>
                           )}
                         </td>
-                        <td className="py-3 px-3 text-slate-300 text-xs">
+                        <td className="py-3 px-3 text-slate-700 text-xs">
                           {w.payoutMode === 'cash' || w.bankName?.includes('नकद') ? (
-                            <p className="text-[11px] text-emerald-300/90 font-medium">
+                            <p className="text-[11px] text-emerald-800 font-medium">
                               ट्रस्ट कार्यालय से नकद मानदेय (बैंक खाता आवश्यक नहीं)
                             </p>
                           ) : (
                             <>
-                              <p className="font-bold">{safeText(w.bankName || '-')}</p>
-                              <p className="font-mono text-[10px] text-slate-400">A/c: {safeText(w.accountNo || '-')}</p>
-                              <p className="font-mono text-[10px] text-slate-400">IFSC: {safeText(w.ifsc || '-')}</p>
+                              <p className="font-bold text-slate-900">{safeText(w.bankName || '-')}</p>
+                              <p className="font-mono text-[10px] text-slate-600">A/c: {safeText(w.accountNo || '-')}</p>
+                              <p className="font-mono text-[10px] text-slate-600">IFSC: {safeText(w.ifsc || '-')}</p>
                             </>
                           )}
                         </td>
                         <td className="py-3 px-3 text-center">
                           {w.status === 'approved' ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                               <span>{w.paidMode ? `पूर्ण (${w.paidMode})` : 'भुगतान पूर्ण'}</span>
                             </span>
                           ) : w.status === 'rejected' ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-500/20 text-red-300 text-[10px] font-bold">
-                              <XCircle className="w-3 h-3 text-red-400" />
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 text-[10px] font-bold border border-rose-200">
+                              <XCircle className="w-3 h-3 text-rose-600" />
                               <span>अस्वीकृत</span>
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold">
-                              <Clock className="w-3 h-3 text-amber-400" />
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+                              <Clock className="w-3 h-3 text-amber-600" />
                               <span>लंबित (Pending)</span>
                             </span>
                           )}
@@ -4601,7 +4672,7 @@ export default function AdminPanel() {
                               <button
                                 type="button"
                                 onClick={() => handleApproveWithdrawal(w, 'cash')}
-                                className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[11px] transition whitespace-nowrap shadow cursor-pointer"
+                                className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[11px] transition whitespace-nowrap shadow cursor-pointer"
                                 title="कार्यालय से नकद भुगतान स्वीकृत करें"
                               >
                                 💵 नकद भुगतान
@@ -4609,7 +4680,7 @@ export default function AdminPanel() {
                               <button
                                 type="button"
                                 onClick={() => handleApproveWithdrawal(w, 'bank')}
-                                className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-[11px] transition whitespace-nowrap cursor-pointer"
+                                className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] transition whitespace-nowrap cursor-pointer"
                                 title="बैंक या UPI से भुगतान स्वीकृत करें"
                               >
                                 🏦 बैंक पेड
@@ -4617,7 +4688,7 @@ export default function AdminPanel() {
                               <button
                                 type="button"
                                 onClick={() => handleRejectWithdrawal(w)}
-                                className="px-2 py-1.5 rounded-xl bg-red-900/60 hover:bg-red-800 text-red-300 text-[11px] transition cursor-pointer"
+                                className="px-2 py-1.5 rounded-xl bg-rose-100 hover:bg-rose-200 text-rose-800 font-bold border border-rose-200 text-[11px] transition cursor-pointer"
                                 title="अस्वीकार एवं वॉलेट रिफंड"
                               >
                                 ✕
@@ -4645,14 +4716,14 @@ export default function AdminPanel() {
             {/* Closings Top Banner */}
             <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold mb-2">
-                  <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold mb-2">
+                  <Clock className="w-3.5 h-3.5 text-emerald-600" />
                   <span>12:00 AM मध्यरात्रि क्लोजिंग इंजन</span>
                 </div>
-                <h2 className="text-xl sm:text-2xl font-black text-white">
+                <h2 className="text-xl sm:text-2xl font-black text-slate-900">
                   दैनिक क्लोजिंग रिपोर्ट (Daily Closing Statements)
                 </h2>
-                <p className="text-xs text-slate-400 mt-1">
+                <p className="text-xs text-slate-500 mt-1">
                   प्रतिदिन रात्रि 12:00 बजे (00:00 IST) ऑटोमैटिक रूप से समस्त सदस्यों का सेल्फ, डायरेक्ट, डाउनलाइन एवं टीम बिज़नेस का क्लोजिंग स्टेटमेंट।
                 </p>
               </div>
@@ -4704,8 +4775,8 @@ export default function AdminPanel() {
                   <div className="space-y-6">
                     {/* Date Selector Pills */}
                     <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-                      <span className="text-xs text-slate-400 font-bold flex items-center gap-1 pl-1">
-                        <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                      <span className="text-xs text-slate-700 font-bold flex items-center gap-1 pl-1">
+                        <Calendar className="w-3.5 h-3.5 text-emerald-600" />
                         <span>क्लोजिंग तारीख:</span>
                       </span>
                       {dates.map((d) => (
@@ -4716,7 +4787,7 @@ export default function AdminPanel() {
                           className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                             d === activeDate
                               ? 'bg-emerald-600 text-white shadow-md'
-                              : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                              : 'bg-white border border-pink-200 text-slate-700 hover:bg-pink-50'
                           }`}
                         >
                           <span>{d}</span>
@@ -4766,23 +4837,23 @@ export default function AdminPanel() {
 
                     {/* Member Statement Table */}
                     <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-700 gap-2">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-pink-100 gap-2">
                         <div>
-                          <h3 className="text-base font-bold text-white flex items-center gap-2">
-                            <FileText className="w-5 h-5 text-emerald-400" />
+                          <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                            <FileText className="w-5 h-5 text-emerald-600" />
                             <span>सदस्यवार दैनिक क्लोजिंग स्टेटमेंट ({activeDate})</span>
                           </h3>
-                          <p className="text-xs text-slate-400 mt-0.5">
+                          <p className="text-xs text-slate-500 mt-0.5">
                             सभी सदस्यों का 12:00 AM क्लोजिंग स्नैपशॉट (सेल्फ, डायरेक्ट, डाउनलाइन, टीम व पेआउट स्थिति)
                           </p>
                         </div>
-                        <span className="text-xs font-mono text-emerald-400 font-bold">
+                        <span className="text-xs font-mono text-emerald-700 font-bold">
                           कुल रिकॉर्ड्स: {statementsList.length}
                         </span>
                       </div>
 
                       {statementsList.length === 0 ? (
-                        <div className="py-12 text-center text-xs text-slate-400">
+                        <div className="py-12 text-center text-xs text-slate-500">
                           इस तारीख के लिए कोई सदस्य स्टेटमेंट उपलब्ध नहीं है।
                         </div>
                       ) : (
@@ -4795,10 +4866,10 @@ export default function AdminPanel() {
                                 <th className="py-3 px-3 text-right">डायरेक्ट बिज़नेस</th>
                                 <th className="py-3 px-3 text-right">डाउनलाइन बिज़नेस</th>
                                 <th className="py-3 px-3 text-right">टीम बिज़नेस</th>
-                                <th className="py-3 px-3 text-right text-blue-300">डायरेक्ट कमीशन</th>
-                                <th className="py-3 px-3 text-right text-amber-300">डाउनलाइन कमीशन</th>
-                                <th className="py-3 px-3 text-right text-emerald-400 font-bold">कुल कमीशन</th>
-                                <th className="py-3 px-3 text-right text-slate-300">ट्रस्ट शेयर</th>
+                                <th className="py-3 px-3 text-right text-blue-800">डायरेक्ट कमीशन</th>
+                                <th className="py-3 px-3 text-right text-amber-800">डाउनलाइन कमीशन</th>
+                                <th className="py-3 px-3 text-right text-emerald-800 font-bold">कुल कमीशन</th>
+                                <th className="py-3 px-3 text-right text-slate-700">ट्रस्ट शेयर</th>
                                 <th className="py-3 px-3 text-center">पेआउट स्थिति</th>
                               </tr>
                             </thead>
@@ -4806,53 +4877,53 @@ export default function AdminPanel() {
                               {statementsList.map((st) => (
                                 <tr key={st.uid || st.memberId} className="hover:bg-pink-50/40">
                                   <td className="py-3 px-3 font-sans">
-                                    <p className="font-bold text-white text-xs">{safeText(st.name)}</p>
-                                    <p className="text-[10px] text-emerald-400 font-mono">{safeText(st.memberId)}</p>
-                                    <p className="text-[10px] text-slate-400 font-mono">{safeText(st.phone)}</p>
+                                    <p className="font-bold text-slate-900 text-xs">{safeText(st.name)}</p>
+                                    <p className="text-[10px] text-emerald-700 font-bold font-mono">{safeText(st.memberId)}</p>
+                                    <p className="text-[10px] text-slate-500 font-mono">{safeText(st.phone)}</p>
                                   </td>
-                                  <td className="py-3 px-3 text-right text-slate-200">
+                                  <td className="py-3 px-3 text-right text-slate-700">
                                     {formatINR(st.selfBusiness || 0)}
                                   </td>
-                                  <td className="py-3 px-3 text-right text-slate-200">
+                                  <td className="py-3 px-3 text-right text-slate-700">
                                     {formatINR(st.directTeamBusiness || 0)}
                                   </td>
-                                  <td className="py-3 px-3 text-right text-slate-200">
+                                  <td className="py-3 px-3 text-right text-slate-700">
                                     {formatINR(st.downlineBusiness || 0)}
                                   </td>
-                                  <td className="py-3 px-3 text-right font-bold text-white">
+                                  <td className="py-3 px-3 text-right font-bold text-slate-900">
                                     {formatINR(st.teamBusiness || 0)}
                                   </td>
-                                  <td className="py-3 px-3 text-right text-blue-300">
+                                  <td className="py-3 px-3 text-right text-blue-800 font-bold">
                                     +{formatINR(st.directTeamCommission || 0)}
                                   </td>
-                                  <td className="py-3 px-3 text-right text-amber-300">
+                                  <td className="py-3 px-3 text-right text-amber-800 font-bold">
                                     +{formatINR(st.downlineCommission || 0)}
                                   </td>
-                                  <td className="py-3 px-3 text-right font-black text-emerald-400 bg-emerald-950/20">
+                                  <td className="py-3 px-3 text-right font-black text-emerald-800 bg-emerald-50">
                                     {formatINR(st.totalCommission || 0)}
                                   </td>
-                                  <td className="py-3 px-3 text-right text-slate-300">
+                                  <td className="py-3 px-3 text-right text-slate-700">
                                     {formatINR(st.trustShare || 0)}
                                   </td>
                                   <td className="py-3 px-3 text-center font-sans">
                                     {st.payoutStatus === 'Pending' ? (
                                       <div className="flex flex-col items-center gap-1.5">
-                                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold">
-                                          <Clock className="w-3 h-3 text-amber-400" />
+                                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+                                          <Clock className="w-3 h-3 text-amber-600" />
                                           Pending ({formatINR(st.walletBalance || 0)})
                                         </span>
                                         <button
                                           type="button"
                                           onClick={() => handleMarkCashPayoutPaid(st, activeDate)}
-                                          className="px-2 py-0.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-[10px] shadow transition active:scale-95 cursor-pointer whitespace-nowrap"
+                                          className="px-2 py-0.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[10px] shadow transition active:scale-95 cursor-pointer whitespace-nowrap"
                                           title="बिना बैंक खाते के नकद भुगतान संपन्न मार्क करें"
                                         >
                                           💵 नकद पेड मार्क करें
                                         </button>
                                       </div>
                                     ) : (
-                                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
-                                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold border border-emerald-200">
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                                         Paid / Settled
                                       </span>
                                     )}
@@ -5534,19 +5605,19 @@ export default function AdminPanel() {
             
             {/* 100% MANUAL LEVEL 1 TO 12 PERCENTAGE CONFIGURATION CARD */}
             <div className="lg:col-span-2 bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-700 gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-pink-100 gap-2">
                 <div>
-                  <h2 className="text-base font-bold text-white flex items-center gap-2">
-                    <Percent className="w-5 h-5 text-emerald-400" />
+                  <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <Percent className="w-5 h-5 text-emerald-600" />
                     <span>100% मैनुअल 12-स्तरीय मानदेय प्रतिशत दरें (Level 1 to 12 Rates Setting)</span>
                   </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    यहाँ व्यवस्थापक (Admin) स्तर 1 से स्तर 12 तक का कोई भी कस्टम प्रतिशत (उदा. 10%, 12%, 5%, 1%, 0.5% या 0%) मैन्युअली टाइप करके सुरक्षित कर सकते हैं।
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    यहाँ व्यवस्थापक (Admin) स्तर 1 से स्तर 12 तक का कोई भी कस्टम प्रतिशत (उदा. 20%, 8%, 5%, 4%, 3%, 2.5%, 2%, 1.5%, 1%) मैन्युअली सेट कर सकते हैं।
                   </p>
                 </div>
                 {saveRatesSuccess && (
-                  <div className="px-3 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-1.5 animate-pulse">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <div className="px-3 py-1.5 rounded-xl bg-emerald-100 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                     <span>दरें सफलतापूर्वक सुरक्षित हुईं!</span>
                   </div>
                 )}
@@ -5554,43 +5625,41 @@ export default function AdminPanel() {
 
               <form onSubmit={handleSaveLevelRates} className="space-y-4">
                 
-                {/* Self Business Commission Rate Box */}
-                <div className="p-4 bg-gradient-to-r from-purple-950/40 via-slate-900 to-indigo-950/40 rounded-2xl border border-purple-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                {/* Self Business Commission Rate Box (0% Fixed) */}
+                <div className="p-4 bg-purple-50 rounded-2xl border border-purple-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-xs font-bold text-purple-300 flex items-center gap-1.5">
-                      <Award className="w-4 h-4 text-purple-400" />
+                    <h3 className="text-xs font-bold text-purple-900 flex items-center gap-1.5">
+                      <Award className="w-4 h-4 text-purple-600" />
                       <span>सेल्फ बिज़नेस मानदेय दर (%) (Self Business Commission Rate %)</span>
+                      <span className="px-2 py-0.5 rounded-full bg-purple-200 text-purple-900 text-[10px] font-black">0% Locked</span>
                     </h3>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      सदस्य द्वारा स्वयं की ID सक्रिय करने पर मानदेय प्रतिशत (डिफ़ॉल्ट 0% - नियमानुसार स्वयं के दान पर कमीशन शून्य)
+                    <p className="text-[11px] text-purple-700 mt-0.5">
+                      नियमानुसार स्वयं के दान/पैकेज पर कमीशन शून्य (0%) निर्धारित है।
                     </p>
                   </div>
                   <div className="relative w-36 shrink-0">
                     <input
                       type="number"
-                      step="0.1"
-                      min="0"
-                      max="100"
-                      value={selfBusinessRate !== undefined ? selfBusinessRate : 0}
-                      onChange={(e) => setSelfBusinessRate(e.target.value)}
-                      placeholder="0"
-                      className="w-full px-3 py-2 pr-7 rounded-xl bg-slate-800 border border-purple-400/40 text-white font-mono font-bold text-xs focus:ring-2 focus:ring-purple-500 outline-none"
+                      disabled
+                      readOnly
+                      value={0}
+                      className="w-full px-3 py-2 pr-7 rounded-xl bg-white border border-purple-200 text-purple-800 font-mono font-bold text-xs cursor-not-allowed outline-none"
                     />
-                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-purple-300 font-bold text-xs">%</span>
+                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-purple-700 font-bold text-xs">%</span>
                   </div>
                 </div>
 
                 <div className="pt-2">
-                  <div className="text-xs font-bold text-slate-300 mb-2 flex items-center gap-2">
-                    <Percent className="w-3.5 h-3.5 text-emerald-400" />
+                  <div className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-2">
+                    <Percent className="w-3.5 h-3.5 text-emerald-600" />
                     <span>स्तर 1 से 12 तक की दरें (Level 1 to Level 12 Rates):</span>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
                     {Array.from({ length: 12 }, (_, i) => i + 1).map((lvl) => (
-                      <div key={lvl} className="p-3 bg-slate-900 rounded-2xl border border-slate-700/80 space-y-1.5">
+                      <div key={lvl} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 space-y-1.5">
                         <div className="flex items-center justify-between text-xs font-bold">
-                          <span className="text-slate-300">स्तर {lvl} (L{lvl})</span>
-                          <span className="text-emerald-400 font-mono text-[11px]">%</span>
+                          <span className="text-slate-800">स्तर {lvl} (L{lvl})</span>
+                          <span className="text-emerald-700 font-mono text-[11px]">%</span>
                         </div>
                         <div className="relative">
                           <input
@@ -5601,9 +5670,9 @@ export default function AdminPanel() {
                             value={levelRates[lvl] !== undefined ? levelRates[lvl] : ''}
                             onChange={(e) => setLevelRates(prev => ({ ...prev, [lvl]: e.target.value }))}
                             placeholder="0"
-                            className="w-full px-3 py-2 pr-7 rounded-xl bg-slate-800 border border-slate-600 text-white font-mono font-bold text-xs focus:ring-2 focus:ring-emerald-500 outline-none"
+                            className="w-full px-3 py-2 pr-7 rounded-xl bg-white border border-slate-300 text-slate-900 font-mono font-bold text-xs focus:ring-2 focus:ring-emerald-500 outline-none"
                           />
-                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">%</span>
+                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 font-bold text-xs">%</span>
                         </div>
                       </div>
                     ))}
@@ -5614,7 +5683,7 @@ export default function AdminPanel() {
                   <button
                     type="submit"
                     disabled={isSavingRates}
-                    className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-900/30 transition active:scale-95 disabled:opacity-50 cursor-pointer"
+                    className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-2 shadow-sm transition active:scale-95 disabled:opacity-50 cursor-pointer"
                   >
                     {isSavingRates ? (
                       <>
@@ -5624,7 +5693,7 @@ export default function AdminPanel() {
                     ) : (
                       <>
                         <Save className="w-4 h-4" />
-                        <span>12-स्तरीय एवं सेल्फ मानदेय दरें सुरक्षित करें (Save Rates)</span>
+                        <span>12-स्तरीय मानदेय दरें सुरक्षित करें (Save Rates)</span>
                       </>
                     )}
                   </button>
@@ -5634,17 +5703,17 @@ export default function AdminPanel() {
 
             {/* ADD CHARITY SPEND FORM */}
             <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
-              <h2 className="text-base font-bold text-white flex items-center gap-2 pb-3 border-b border-slate-700">
-                <Sparkles className="w-5 h-5 text-emerald-400" />
+              <h2 className="text-base font-bold text-slate-900 flex items-center gap-2 pb-3 border-b border-pink-100">
+                <Sparkles className="w-5 h-5 text-emerald-600" />
                 <span>सेवा कार्य व्यय प्रविष्टि (Add Verified Charity Spend)</span>
               </h2>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500">
                 यहाँ जोड़ा गया प्रत्येक व्यय होमपेज पर &quot;सेवा कार्य व्यय&quot; रीयलटाइम स्टेटिस्टिक में तुरंत जुड़ जाता है।
               </p>
 
               <form onSubmit={handleAddCharitySpend} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     सेवा कार्य का शीर्षक *
                   </label>
                   <input
@@ -5653,13 +5722,13 @@ export default function AdminPanel() {
                     placeholder="उदा. काशीपुर मलिन बस्ती में 150 कम्बल वितरण"
                     value={spendTitle}
                     onChange={(e) => setSpendTitle(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-emerald-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-xs text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       व्यय राशि (₹) *
                     </label>
                     <input
@@ -5668,12 +5737,12 @@ export default function AdminPanel() {
                       placeholder="उदा. 25000"
                       value={spendAmount}
                       onChange={(e) => setSpendAmount(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-bold text-white placeholder-slate-500 focus:ring-2 focus:ring-emerald-500"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-xs font-bold text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 outline-none"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
                       लाभार्थियों की संख्या
                     </label>
                     <input
@@ -5681,19 +5750,19 @@ export default function AdminPanel() {
                       placeholder="उदा. 150 परिवार"
                       value={spendBeneficiaries}
                       onChange={(e) => setSpendBeneficiaries(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-emerald-500"
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-xs text-slate-900 placeholder-slate-400 focus:ring-2 focus:ring-emerald-500 outline-none"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
                     व्यय श्रेणी (Category)
                   </label>
                   <select
                     value={spendCategory}
                     onChange={(e) => setSpendCategory(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:ring-2 focus:ring-emerald-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-xs text-slate-900 focus:ring-2 focus:ring-emerald-500 outline-none"
                   >
                     <option value="कंबल व राहत सामग्री वितरण">कंबल व राहत सामग्री वितरण</option>
                     <option value="बाल शिक्षा व छात्रवृत्ति">बाल शिक्षा व छात्रवृत्ति सहायता</option>
@@ -5705,7 +5774,7 @@ export default function AdminPanel() {
 
                 <button
                   type="submit"
-                  className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 font-bold text-xs text-white transition flex items-center justify-center gap-2"
+                  className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 font-bold text-xs text-white transition flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Save className="w-4 h-4" />
                   <span>व्यय सुरक्षित करें (Save Spend)</span>
@@ -5713,24 +5782,24 @@ export default function AdminPanel() {
               </form>
 
               {/* Spends List */}
-              <div className="pt-4 border-t border-slate-700 space-y-2">
-                <h4 className="font-bold text-xs text-slate-300">हालिया व्यय रिकॉर्ड्स:</h4>
+              <div className="pt-4 border-t border-pink-100 space-y-2">
+                <h4 className="font-bold text-xs text-slate-800">हालिया व्यय रिकॉर्ड्स:</h4>
                 <div className="space-y-1.5 max-h-48 overflow-y-auto">
                   {Object.values(spends).length === 0 ? (
                     <p className="text-xs text-slate-500">अभी तक कोई व्यय दर्ज नहीं हुआ है।</p>
                   ) : (
                     Object.values(spends).map((s) => (
-                      <div key={s.id} className="p-2.5 rounded-xl bg-slate-900 border border-slate-700/60 flex items-center justify-between text-xs">
+                      <div key={s.id} className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-xs">
                         <div>
-                          <p className="font-bold text-white">{safeText(s.title)}</p>
-                          <p className="text-[10px] text-slate-400">{safeText(s.category)} • {safeText(s.beneficiaries)}</p>
+                          <p className="font-bold text-slate-900">{safeText(s.title)}</p>
+                          <p className="text-[10px] text-slate-500">{safeText(s.category)} • {safeText(s.beneficiaries)}</p>
                         </div>
                         <div className="flex items-center gap-3">
-                          <strong className="text-emerald-400 font-mono">{formatINR(s.amount || 0)}</strong>
+                          <strong className="text-emerald-700 font-mono">{formatINR(s.amount || 0)}</strong>
                           <button
                             type="button"
                             onClick={() => handleDeleteSpend(s.id)}
-                            className="text-slate-500 hover:text-red-400"
+                            className="text-slate-400 hover:text-rose-600 cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -5744,49 +5813,49 @@ export default function AdminPanel() {
 
             {/* FOUNDATION STATUTORY INFO & BANK SETTINGS */}
             <div className="bg-white rounded-3xl p-6 border border-pink-200/80 shadow-sm text-slate-900 space-y-4">
-              <h2 className="text-base font-bold text-white flex items-center gap-2 pb-3 border-b border-slate-700">
-                <Settings className="w-5 h-5 text-emerald-400" />
+              <h2 className="text-base font-bold text-slate-900 flex items-center gap-2 pb-3 border-b border-pink-100">
+                <Settings className="w-5 h-5 text-emerald-600" />
                 <span>फाउंडेशन वैधानिक विवरण एवं संपर्क</span>
               </h2>
 
-              <div className="space-y-3 text-xs text-slate-300">
-                <div className="p-3 bg-slate-900 rounded-xl border border-slate-700 space-y-1">
-                  <p className="text-slate-400 font-medium">संस्था का नाम (हिंदी/English):</p>
-                  <p className="font-bold text-white">{safeText(FOUNDATION_DETAILS.nameHindi)}</p>
-                  <p className="text-emerald-400 font-medium">{safeText(FOUNDATION_DETAILS.nameEnglish)}</p>
+              <div className="space-y-3 text-xs text-slate-700">
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
+                  <p className="text-slate-500 font-medium">संस्था का नाम (हिंदी/English):</p>
+                  <p className="font-bold text-slate-900">{safeText(FOUNDATION_DETAILS.nameHindi)}</p>
+                  <p className="text-emerald-700 font-semibold">{safeText(FOUNDATION_DETAILS.nameEnglish)}</p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="p-3 bg-slate-900 rounded-xl border border-slate-700">
-                    <p className="text-slate-400">कॉर्पोरेट CIN:</p>
-                    <p className="font-mono font-bold text-white mt-1">{safeText(FOUNDATION_DETAILS.cin)}</p>
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <p className="text-slate-500">कॉर्पोरेट CIN:</p>
+                    <p className="font-mono font-bold text-slate-900 mt-1">{safeText(FOUNDATION_DETAILS.cin)}</p>
                   </div>
-                  <div className="p-3 bg-slate-900 rounded-xl border border-slate-700">
-                    <p className="text-slate-400">स्थायी खाता (PAN):</p>
-                    <p className="font-mono font-bold text-white mt-1">{safeText(FOUNDATION_DETAILS.pan)}</p>
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <p className="text-slate-500">स्थायी खाता (PAN):</p>
+                    <p className="font-mono font-bold text-slate-900 mt-1">{safeText(FOUNDATION_DETAILS.pan)}</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="p-3 bg-slate-900 rounded-xl border border-slate-700">
-                    <p className="text-slate-400">टैक्स खाता (TAN):</p>
-                    <p className="font-mono font-bold text-white mt-1">{safeText(FOUNDATION_DETAILS.tan)}</p>
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <p className="text-slate-500">टैक्स खाता (TAN):</p>
+                    <p className="font-mono font-bold text-slate-900 mt-1">{safeText(FOUNDATION_DETAILS.tan)}</p>
                   </div>
-                  <div className="p-3 bg-slate-900 rounded-xl border border-slate-700">
-                    <p className="text-slate-400">आधिकारिक UPI ID:</p>
-                    <p className="font-mono font-bold text-emerald-400 mt-1">{safeText(FOUNDATION_DETAILS.upiId)}</p>
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <p className="text-slate-500">आधिकारिक UPI ID:</p>
+                    <p className="font-mono font-bold text-emerald-700 mt-1">{safeText(FOUNDATION_DETAILS.upiId)}</p>
                   </div>
                 </div>
 
-                <div className="p-3 bg-slate-900 rounded-xl border border-slate-700 space-y-1">
-                  <p className="text-slate-400 font-medium">पंजीकृत मुख्यालय पता:</p>
-                  <p className="text-slate-200">{safeText(FOUNDATION_DETAILS.address)}</p>
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
+                  <p className="text-slate-500 font-medium">पंजीकृत मुख्यालय पता:</p>
+                  <p className="text-slate-800">{safeText(FOUNDATION_DETAILS.address)}</p>
                 </div>
 
-                <div className="p-3 bg-slate-900 rounded-xl border border-slate-700 space-y-1">
-                  <p className="text-slate-400 font-medium">फाउंडेशन बैंक खाता:</p>
-                  <p className="text-white font-medium">{safeText(FOUNDATION_DETAILS.bankDetails.bankName)}</p>
-                  <p className="font-mono text-slate-300">A/c: {safeText(FOUNDATION_DETAILS.bankDetails.accountNo)} | IFSC: {safeText(FOUNDATION_DETAILS.bankDetails.ifsc)}</p>
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
+                  <p className="text-slate-500 font-medium">फाउंडेशन बैंक खाता:</p>
+                  <p className="text-slate-900 font-medium">{safeText(FOUNDATION_DETAILS.bankDetails.bankName)}</p>
+                  <p className="font-mono text-slate-700">A/c: {safeText(FOUNDATION_DETAILS.bankDetails.accountNo)} | IFSC: {safeText(FOUNDATION_DETAILS.bankDetails.ifsc)}</p>
                 </div>
               </div>
             </div>
