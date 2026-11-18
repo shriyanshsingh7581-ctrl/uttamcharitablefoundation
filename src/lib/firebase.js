@@ -16,6 +16,7 @@ import {
   rtdb,
   googleProvider,
   testConnection,
+  getCloudSyncStatus,
   OperationType,
   handleFirestoreError,
   getDatabase,
@@ -42,6 +43,7 @@ export {
   rtdb,
   googleProvider,
   testConnection,
+  getCloudSyncStatus,
   OperationType,
   handleFirestoreError,
   getDatabase,
@@ -76,6 +78,7 @@ export default {
   rtdb,
   googleProvider,
   testConnection,
+  getCloudSyncStatus,
   OperationType,
   handleFirestoreError,
 };

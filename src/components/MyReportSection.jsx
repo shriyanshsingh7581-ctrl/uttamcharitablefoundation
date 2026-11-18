@@ -21,14 +21,15 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { rtdb } from '../lib/firebase';
-import { ref, get } from 'firebase/database';
+import { ref, onValue } from 'firebase/database';
 import { FOUNDATION_DETAILS, formatINR, safeText } from '../lib/constants';
 import { 
   buildMember12LevelReport, 
   getMemberFullName, 
   parseAmount, 
   normId, 
-  findParentMember 
+  findParentMember,
+  formatMemberJoiningDate
 } from '../utils/mlmUtils';
 import { VoucherPrintButton } from './CommissionVoucher';
 
@@ -45,29 +46,51 @@ export default function MyReportSection({ targetMember = null }) {
   const [copiedPass, setCopiedPass] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedUser, setSelectedUser] = useState(targetMember || null);
+  const [directoryTab, setDirectoryTab] = useState('auto'); // 'auto' | 'team' | 'all'
 
-  // Load all users from RTDB
   useEffect(() => {
-    async function load() {
-      try {
-        const snap = await get(ref(rtdb, 'users'));
-        if (snap.exists()) {
-          const val = snap.val();
-          setAllUsers(val);
-          if (!selectedUser) {
-            const current = Object.values(val).find(u => 
+    if (targetMember) {
+      setSelectedUser(targetMember);
+    }
+  }, [targetMember?.uid, targetMember?.memberId]);
+
+  // Real-time subscription to RTDB/Firestore users
+  useEffect(() => {
+    const unsub = onValue(
+      ref(rtdb, 'users'),
+      (snap) => {
+        const val = snap.exists() ? snap.val() : {};
+        setAllUsers(val);
+        const list = Object.entries(val || {}).map(([uid, u]) => ({ uid, ...u }));
+        if (list.length > 0) {
+          setSelectedUser((prev) => {
+            if (prev?.memberId || prev?.uid) {
+              const refreshed = list.find(u =>
+                (prev.uid && u.uid === prev.uid) ||
+                (prev.memberId && normId(u.memberId) === normId(prev.memberId))
+              );
+              if (refreshed) return refreshed;
+            }
+            if (targetMember) {
+              const matchedTarget = list.find(u =>
+                (targetMember.uid && u.uid === targetMember.uid) ||
+                (targetMember.memberId && normId(u.memberId) === normId(targetMember.memberId))
+              );
+              if (matchedTarget) return matchedTarget;
+            }
+            return list.find(u =>
               (userProfile?.memberId && normId(u.memberId) === normId(userProfile.memberId)) ||
               (member?.memberId && normId(u.memberId) === normId(member.memberId))
-            ) || userProfile || member || Object.values(val).find(u => u && (u.memberId === 'UCWF-0001' || u.memberId === 'UCWF-2026-6401')) || Object.values(val)[0];
-            setSelectedUser(current);
-          }
+            ) || userProfile || member || list.find(u => u && (u.memberId === 'UCWF-0001' || u.memberId === 'UCWF-2026-6401')) || list[0];
+          });
         }
-      } catch (err) {
+      },
+      (err) => {
         console.error('Error loading users for My Report:', err);
       }
-    }
-    load();
-  }, [userProfile?.memberId, member?.memberId]);
+    );
+    return () => unsub();
+  }, [userProfile?.memberId, member?.memberId, targetMember?.memberId]);
 
   const activeUser = selectedUser || targetMember || userProfile || member;
   const report = buildMember12LevelReport(activeUser, allUsers) || {
@@ -376,6 +399,121 @@ export default function MyReportSection({ targetMember = null }) {
             </div>
           )}
         </div>
+
+        {/* Full 12-Level Team & All Registered Members Directory */}
+        {(() => {
+          const downlineList = report.fullDownlineList || [];
+          const allSortedMembers = Object.entries(allUsers || {})
+            .filter(([, u]) => Boolean(u && (u.name || u.memberId)))
+            .map(([uid, u]) => ({ uid, ...u }))
+            .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+
+          const effectiveTab =
+            directoryTab === 'auto'
+              ? (targetMember === null || downlineList.length === 0 ? 'all' : 'team')
+              : directoryTab;
+
+          const activeRows = effectiveTab === 'all' ? allSortedMembers : downlineList;
+
+          return (
+            <div className="bg-blue-50/50 rounded-2xl p-5 border border-blue-200 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-blue-700" />
+                  <span>
+                    {effectiveTab === 'all'
+                      ? `सभी पंजीकृत सदस्य सूची (All Registered Members - ${allSortedMembers.length})`
+                      : `सम्पूर्ण 12-स्तरीय टीम सूची (Full 12-Level Team - ${downlineList.length})`}
+                  </span>
+                </h4>
+
+                <div className="inline-flex rounded-xl bg-white p-1 border border-blue-200 text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setDirectoryTab('team')}
+                    className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                      effectiveTab === 'team' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    12-Level Team ({downlineList.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDirectoryTab('all')}
+                    className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                      effectiveTab === 'all' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    सभी सदस्य ({allSortedMembers.length})
+                  </button>
+                </div>
+              </div>
+
+              {activeRows.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-500 bg-white rounded-xl border border-slate-200">
+                  कोई सदस्य रिकॉर्ड उपलब्ध नहीं है। ऊपर दिए गए फॉर्म से नया सदस्य जोड़ें।
+                </div>
+              ) : (
+                <div className="overflow-x-auto bg-white rounded-xl border border-blue-200 shadow-2xs">
+                  <table className="w-full text-xs text-left border-collapse">
+                    <thead className="bg-blue-100/70 text-slate-800 font-bold border-b border-blue-200">
+                      <tr>
+                        <th className="py-2.5 px-3">S.No.</th>
+                        {effectiveTab === 'team' && <th className="py-2.5 px-3">Level</th>}
+                        <th className="py-2.5 px-3">Member Name</th>
+                        <th className="py-2.5 px-3">Member ID</th>
+                        <th className="py-2.5 px-3">Mobile No.</th>
+                        <th className="py-2.5 px-3">Sponsor ID</th>
+                        <th className="py-2.5 px-3">Joining Date</th>
+                        <th className="py-2.5 px-3 text-right">Donation (₹)</th>
+                        <th className="py-2.5 px-3 text-center print:hidden">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {activeRows.map((m, idx) => (
+                        <tr key={m.uid || m.memberId || idx} className="hover:bg-blue-50/40">
+                          <td className="py-2 px-3 text-slate-500 font-mono">{idx + 1}</td>
+                          {effectiveTab === 'team' && (
+                            <td className="py-2 px-3 font-mono font-bold text-purple-800 whitespace-nowrap">
+                              L{m.level} ({m.rate}%)
+                            </td>
+                          )}
+                          <td className="py-2 px-3 font-bold text-slate-900 whitespace-nowrap">
+                            {getMemberFullName(m)}
+                          </td>
+                          <td className="py-2 px-3 font-mono font-bold text-blue-900 whitespace-nowrap">
+                            {m.memberId || 'N/A'}
+                          </td>
+                          <td className="py-2 px-3 font-mono text-slate-700 whitespace-nowrap">
+                            {m.phone || '—'}
+                          </td>
+                          <td className="py-2 px-3 font-mono text-slate-600 whitespace-nowrap">
+                            {m.sponsorIdResolved || m.sponsorId || 'UCWF-0001'}
+                          </td>
+                          <td className="py-2 px-3 font-mono text-slate-600 whitespace-nowrap">
+                            {formatMemberJoiningDate(m)}
+                          </td>
+                          <td className="py-2 px-3 text-right font-mono font-bold text-slate-900 whitespace-nowrap">
+                            {formatINR(m.packageAmount || parseAmount(m) || 500)}
+                          </td>
+                          <td className="py-2 px-3 text-center print:hidden whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedUser(m)}
+                              className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-800 font-bold text-[11px] border border-blue-200 transition cursor-pointer"
+                            >
+                              रिपोर्ट देखें
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Bottom Print Voucher Button */}

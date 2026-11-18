@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { rtdb } from '../lib/firebase';
-import { ref, get } from 'firebase/database';
+import { ref, onValue } from 'firebase/database';
 import { FOUNDATION_DETAILS, formatINR, safeText } from '../lib/constants';
 import { getMemberFullName, parseAmount, normId } from '../utils/mlmUtils';
 import { PRESIDENT_STAMP_SIGNATURE_BASE64 } from '../lib/signature-asset';
@@ -48,31 +48,39 @@ export default function DonationSlipSection({ initialMemberId = '' }) {
   const { member, userProfile } = useAuth();
   const [activeSubTab, setActiveSubTab] = useState('receipt'); // 'receipt' | 'idcard' | 'certificate'
   const [allUsers, setAllUsers] = useState([]);
-  const [searchQuery, setSearchQuery] = useState(initialMemberId || '');
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedUser, setSelectedUser] = useState(null);
 
-  // Load all users from RTDB
+  // Subscribe live to RTDB/Firestore users
   useEffect(() => {
-    async function load() {
-      try {
-        const snap = await get(ref(rtdb, 'users'));
-        if (snap.exists()) {
-          const list = Object.values(snap.val());
-          setAllUsers(list);
-
-          const defaultTarget = list.find(u => 
-            (initialMemberId && normId(u.memberId) === normId(initialMemberId)) ||
-            (userProfile?.memberId && normId(u.memberId) === normId(userProfile.memberId)) ||
-            (member?.memberId && normId(u.memberId) === normId(member.memberId))
-          ) || userProfile || member || list[0];
-
-          setSelectedUser(defaultTarget);
+    const unsub = onValue(
+      ref(rtdb, 'users'),
+      (snap) => {
+        const val = snap.exists() ? snap.val() : {};
+        const list = Object.entries(val || {}).map(([uid, u]) => ({ uid, ...u }));
+        setAllUsers(list);
+        if (list.length > 0) {
+          setSelectedUser((prev) => {
+            if (prev?.memberId || prev?.uid) {
+              const refreshed = list.find(u =>
+                (prev.uid && u.uid === prev.uid) ||
+                (prev.memberId && normId(u.memberId) === normId(prev.memberId))
+              );
+              if (refreshed) return refreshed;
+            }
+            return list.find(u =>
+              (initialMemberId && normId(u.memberId) === normId(initialMemberId)) ||
+              (userProfile?.memberId && normId(u.memberId) === normId(userProfile.memberId)) ||
+              (member?.memberId && normId(u.memberId) === normId(member.memberId))
+            ) || userProfile || member || list[0];
+          });
         }
-      } catch (err) {
+      },
+      (err) => {
         console.error('Error loading users for donation slip:', err);
       }
-    }
-    load();
+    );
+    return () => unsub();
   }, [initialMemberId, userProfile?.memberId, member?.memberId]);
 
   const targetUser = selectedUser || userProfile || member;

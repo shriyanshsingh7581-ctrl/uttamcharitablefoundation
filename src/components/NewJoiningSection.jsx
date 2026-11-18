@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   UserPlus, 
   CheckCircle2, 
@@ -13,23 +13,36 @@ import {
   Phone,
   Lock,
   MapPin,
-  Sparkles
+  Sparkles,
+  Users
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { rtdb } from '../lib/firebase';
+import { ref, onValue, push, set } from 'firebase/database';
 import { formatINR, safeText } from '../lib/constants';
 import { distribute12LevelCommission } from '../utils/commission';
+import { getMemberFullName, formatMemberJoiningDate } from '../utils/mlmUtils';
 
 const PRESET_AMOUNTS = [500, 1100, 2100, 5100, 11000];
 
-export default function NewJoiningSection({ defaultSponsorId = '', onRegistered = null }) {
+export default function NewJoiningSection({
+  defaultSponsorId = '',
+  isAdmin = false,
+  isAdminMode = false,
+  onRegistered = null,
+  onCreated = null
+}) {
   const fileRef = useRef(null);
   const photoRef = useRef(null);
   const inputRef = useRef(null);
 
   const { registerUser, member, userProfile } = useAuth();
   const currentMemId = userProfile?.memberId || member?.memberId || '';
+  const initialSponsor = (defaultSponsorId && defaultSponsorId !== 'UCWF-2026-MEMBER')
+    ? defaultSponsorId
+    : (currentMemId && currentMemId !== 'UCWF-2026-MEMBER' ? currentMemId : 'UCWF-0001');
 
-  const [sponsorId, setSponsorId] = useState(defaultSponsorId || currentMemId || 'UCWF-0001');
+  const [sponsorId, setSponsorId] = useState(initialSponsor);
   const [salutation, setSalutation] = useState('श्री');
   const [name, setName] = useState('');
   const [fatherOrSpouseName, setFatherOrSpouseName] = useState('');
@@ -41,11 +54,42 @@ export default function NewJoiningSection({ defaultSponsorId = '', onRegistered 
   const [city, setCity] = useState('काशीपुर');
   const [state, setState] = useState('उत्तराखण्ड');
 
+  const [allUsersMap, setAllUsersMap] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successData, setSuccessData] = useState(null);
   const [copiedId, setCopiedId] = useState(false);
   const [copiedPass, setCopiedPass] = useState(false);
+
+  // Sync sponsorId once authenticated member hydrates
+  useEffect(() => {
+    const resolved = (defaultSponsorId && defaultSponsorId !== 'UCWF-2026-MEMBER')
+      ? defaultSponsorId
+      : (currentMemId && currentMemId !== 'UCWF-2026-MEMBER' ? currentMemId : '');
+    if (resolved && (!sponsorId || sponsorId === 'UCWF-2026-MEMBER')) {
+      setSponsorId(resolved);
+    }
+  }, [defaultSponsorId, currentMemId]);
+
+  // Live RTDB subscription to show recently added members immediately below
+  useEffect(() => {
+    const unsub = onValue(
+      ref(rtdb, 'users'),
+      (snap) => {
+        setAllUsersMap(snap.exists() ? snap.val() : {});
+      },
+      (err) => console.warn('NewJoiningSection users listener note:', err)
+    );
+    return () => unsub();
+  }, []);
+
+  const recentMembersList = useMemo(() => {
+    const list = Object.entries(allUsersMap || {})
+      .filter(([, u]) => Boolean(u && u.name))
+      .map(([uid, u]) => ({ uid, ...u }));
+    list.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+    return list.slice(0, 15);
+  }, [allUsersMap]);
 
   const activeAmount = customAmount ? Number(customAmount) : donationAmount;
 
@@ -71,6 +115,7 @@ export default function NewJoiningSection({ defaultSponsorId = '', onRegistered 
     try {
       const cleanPass = password.trim() || cleanPhone || 'UCWF@1234';
       const cleanSponsor = sponsorId.trim().toUpperCase() || 'UCWF-0001';
+      const nowIso = new Date().toISOString();
 
       const memberPayload = {
         salutation,
@@ -95,10 +140,37 @@ export default function NewJoiningSection({ defaultSponsorId = '', onRegistered 
         isApproved: true,
         paymentVerified: true,
         kycVerified: true,
-        joiningDate: new Date().toISOString()
+        isAdminMode: Boolean(isAdmin || isAdminMode),
+        preserveSession: true,
+        joiningDate: nowIso,
+        timestamp: Date.now()
       };
 
       const newMember = await registerUser(memberPayload);
+
+      // Record in payment_requests so integrity & accounting reports match
+      try {
+        const payRef = push(ref(rtdb, 'payment_requests'));
+        await set(payRef, {
+          id: payRef.key,
+          userId: newMember.uid,
+          memberId: newMember.memberId,
+          userName: `${salutation} ${name.trim()}`.trim(),
+          email: newMember.email || `${cleanPhone}@ucwf.online`,
+          phone: cleanPhone,
+          sponsorId: cleanSponsor,
+          amount: activeAmount,
+          packageName: `सहयोग संकल्प (₹${activeAmount})`,
+          paymentMode: 'Quick Joining / Office Deposit',
+          paymentMethod: 'Quick Joining',
+          status: 'approved',
+          utrNumber: 'PORTAL-QUICK-JOIN',
+          createdAt: nowIso,
+          timestamp: Date.now()
+        });
+      } catch (payErr) {
+        console.warn('Payment request log note:', payErr);
+      }
 
       // Auto-trigger 12-level upline commission calculation
       try {
@@ -224,6 +296,18 @@ export default function NewJoiningSection({ defaultSponsorId = '', onRegistered 
           </div>
 
           <div className="flex flex-wrap justify-center gap-3 pt-2">
+            {(onCreated || onRegistered) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (onCreated) onCreated(successData);
+                }}
+                className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-md flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+              >
+                <Users className="w-4 h-4 text-emerald-300" />
+                <span>सदस्य सूची देखें (View Members List)</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleResetForm}
@@ -443,6 +527,60 @@ export default function NewJoiningSection({ defaultSponsorId = '', onRegistered 
           </div>
         </form>
       )}
+
+      {/* Live Recently Added Members Directory directly visible below New Joining */}
+      <div className="mt-8 pt-6 border-t border-emerald-100 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+            <Users className="w-4 h-4 text-emerald-600" />
+            <span>पंजीकृत एवं हाल ही में जोड़े गए सदस्य (Live Members List — {Object.keys(allUsersMap || {}).length})</span>
+          </h3>
+          {onCreated && (
+            <button
+              type="button"
+              onClick={() => onCreated(null)}
+              className="text-xs font-bold text-emerald-700 hover:text-emerald-900 underline cursor-pointer"
+            >
+              पूर्ण मास्टर लिस्ट खोलें →
+            </button>
+          )}
+        </div>
+
+        <div className="overflow-x-auto bg-slate-50 rounded-2xl border border-slate-200">
+          <table className="w-full text-xs text-left border-collapse">
+            <thead className="bg-emerald-50 text-slate-800 font-bold border-b border-emerald-200">
+              <tr>
+                <th className="py-2.5 px-3">S.No.</th>
+                <th className="py-2.5 px-3">Member Name</th>
+                <th className="py-2.5 px-3">Member ID</th>
+                <th className="py-2.5 px-3">Mobile</th>
+                <th className="py-2.5 px-3">Sponsor ID</th>
+                <th className="py-2.5 px-3 text-center">Date</th>
+                <th className="py-2.5 px-3 text-right">Amount</th>
+                <th className="py-2.5 px-3 text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 bg-white">
+              {recentMembersList.map((m, idx) => (
+                <tr key={m.uid || m.memberId || idx} className="hover:bg-emerald-50/40">
+                  <td className="py-2 px-3 font-mono text-slate-500">{idx + 1}</td>
+                  <td className="py-2 px-3 font-bold text-slate-900">{getMemberFullName(m)}</td>
+                  <td className="py-2 px-3 font-mono font-bold text-emerald-800">{safeText(m.memberId)}</td>
+                  <td className="py-2 px-3 font-mono text-slate-700">{safeText(m.phone || '—')}</td>
+                  <td className="py-2 px-3 font-mono text-amber-800 font-bold">{safeText(m.sponsorId || 'DIRECT')}</td>
+                  <td className="py-2 px-3 text-center font-mono text-slate-600">{formatMemberJoiningDate(m)}</td>
+                  <td className="py-2 px-3 text-right font-mono font-bold text-slate-900">{formatINR(m.packageAmount || m.packageTier || 500)}</td>
+                  <td className="py-2 px-3 text-center">
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold uppercase">
+                      {safeText(m.status || 'active')}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

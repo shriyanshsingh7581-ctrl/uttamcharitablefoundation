@@ -54,6 +54,7 @@ export default function Dashboard() {
 
   const activeUser = userProfile || member || { memberId: 'UCWF-2026-MEMBER' };
   const memberId = activeUser?.memberId || 'UCWF-2026-MEMBER';
+  const resolvedMemberId = (memberId && memberId !== 'UCWF-2026-MEMBER') ? memberId : 'UCWF-0001';
 
   // 8 Canonical Options Drawn by the Client
   // 'new-joining' | 'donation-slip' | 'my-report' | 'downline-report' | 'my-payout' | 'paid-expense' | 'paid-payout' | 'date-by-report'
@@ -257,6 +258,8 @@ export default function Dashboard() {
                   <span>स्पॉन्सर: <strong className="text-emerald-300 font-mono">{activeUser?.sponsorId || 'DIRECT'}</strong></span>
                   <span>•</span>
                   <span>फोन: <strong className="text-white font-mono">{activeUser?.phone || '—'}</strong></span>
+                  <span>•</span>
+                  <span>कुल सदस्य: <strong className="text-amber-300 font-mono">{Object.keys(allUsers || {}).length}</strong></span>
                 </div>
               </div>
             </div>
@@ -350,12 +353,15 @@ export default function Dashboard() {
         <div className="animate-fadeIn">
           {/* OPTION 1: New Joining / डोनेशन */}
           {activeTab === 'new-joining' && (
-            <NewJoiningSection defaultSponsorId={memberId} />
+            <NewJoiningSection
+              defaultSponsorId={resolvedMemberId}
+              onCreated={() => handleTabChange('my-report')}
+            />
           )}
 
           {/* OPTION 2: डोनेशन की स्लिप (Donation Slip) */}
           {activeTab === 'donation-slip' && (
-            <DonationSlipSection initialMemberId={memberId} />
+            <DonationSlipSection initialMemberId={resolvedMemberId} />
           )}
 
           {/* OPTION 3: My Report */}
@@ -365,12 +371,12 @@ export default function Dashboard() {
 
           {/* OPTION 4: Downline Report */}
           {activeTab === 'downline-report' && (
-            <DownlineReportSection initialMemberId={memberId} />
+            <DownlineReportSection initialMemberId={resolvedMemberId} />
           )}
 
           {/* OPTION 5: My Payout */}
           {activeTab === 'my-payout' && (
-            <MyPayoutSection initialMemberId={memberId} />
+            <MyPayoutSection initialMemberId={resolvedMemberId} />
           )}
 
           {/* OPTION 6: Paid Expense */}
@@ -380,7 +386,7 @@ export default function Dashboard() {
 
           {/* OPTION 7: Paid Payout */}
           {activeTab === 'paid-payout' && (
-            <PaidPayoutSection isAdmin={false} targetMemberId={memberId} />
+            <PaidPayoutSection isAdmin={false} targetMemberId={resolvedMemberId} />
           )}
 
           {/* OPTION 8: Date by Report */}

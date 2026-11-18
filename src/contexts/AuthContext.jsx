@@ -334,12 +334,13 @@ export const AuthProvider = ({ children }) => {
       ...data,
     };
 
-    // Save directly to Firebase Realtime Database
+    // Save directly to Firebase Database Adapter
     await set(ref(db, `users/${newUid}`), newMemberData);
 
-    // If not admin mode and not currently admin, establish active session for new member
-    const adminStored = localStorage.getItem('ucwf_admin_session') === 'true';
-    if (!adminStored && !data.isAdminMode) {
+    // Only auto-login the newly registered member when registering from public /register while logged out
+    const adminStored = typeof localStorage !== 'undefined' && localStorage.getItem('ucwf_admin_session') === 'true';
+    const hasActiveSession = Boolean(user || member || isAdmin || adminStored || data.isAdminMode || data.preserveSession);
+    if (!hasActiveSession) {
       const authUserObj = {
         uid: newUid,
         email: email,

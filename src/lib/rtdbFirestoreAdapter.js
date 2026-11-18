@@ -4,12 +4,11 @@
  * Bridges all `firebase/database` calls (`ref`, `get`, `set`, `update`, `push`, `remove`,
  * `onValue`, `off`, `child`, `query`, `orderByChild`, `equalTo`, `serverTimestamp`)
  * directly to the provisioned Cloud Firestore database (`firebase-applet-config.json`),
- * backed by an instant-hydration local state tree + BroadcastChannel sync so:
+ * backed by an instant-hydration local state tree + IndexedDB + BroadcastChannel sync so:
  *  - Pages & dashboards load in <5ms with zero hanging placeholder sockets.
- *  - Every form submission (`PaperRegistrationForm`, `Wallet`, `Profile`, `AdminPanel`, etc.)
- *    completes cleanly and notifies all listeners in real time.
- *  - Public foundation collections (`settings`, `events`, `spends`, `media_gallery`,
- *    `daily_closings`, approved `media_submissions`) sync live with Cloud Firestore immediately,
+ *  - Large base64 KYC docs/photos are persisted safely in IndexedDB (no 5MB QuotaExceededError)
+ *    while all member/ledger records stay mirrored in compacted localStorage for synchronous boot.
+ *  - Public foundation collections sync live with Cloud Firestore immediately,
  *    and authenticated user/admin collections sync live with Cloud Firestore upon sign-in.
  */
 
@@ -112,8 +111,8 @@ const COLLECTION_ALLOWED_KEYS = {
     'declarationAccepted', 'applicationDate', 'joiningDate', 'createdAt',
     'timestamp', 'updatedAt', 'role', 'is_admin', 'isAdminMode', 'username',
   ]),
-  members: null, // uses users set
-  wallets: null, // uses users set
+  members: null,
+  wallets: null,
   payment_requests: new Set([
     'id', 'userId', 'memberId', 'userName', 'email', 'phone', 'sponsorId',
     'amount', 'packageName', 'paymentMode', 'paymentMethod', 'status',
@@ -134,12 +133,12 @@ const COLLECTION_ALLOWED_KEYS = {
     'trustShare', 'payouts', 'status', 'paymentMode', 'referenceNo',
     'remarks', 'date', 'createdAt', 'timestamp',
   ]),
-  payout_logs: null, // uses payout_records set
+  payout_logs: null,
   spends: new Set([
     'id', 'title', 'category', 'amount', 'date', 'description',
     'location', 'beneficiaryCount', 'receiptUrl', 'createdAt', 'timestamp',
   ]),
-  expenses: null, // uses spends set
+  expenses: null,
   media_submissions: new Set([
     'id', 'userId', 'memberId', 'userName', 'title', 'description',
     'category', 'location', 'mediaUrl', 'mediaType', 'status',
@@ -287,9 +286,11 @@ function sanitizeForFirestore(colName, docId, rawVal) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Local Hydrated Store + Seed Root Sponsor + Real-Time Firestore Bridge
+// 4. Local Hydrated Store + IndexedDB + Seed Root Sponsor + Broadcast Sync
 // ---------------------------------------------------------------------------
 const LOCAL_CACHE_KEY = 'ucwf_rtdb_cache_v2';
+const IDB_NAME = 'ucwf_rtdb_idb';
+const IDB_STORE = 'kv';
 const SYNC_CHANNEL_NAME = 'ucwf_rtdb_sync_v1';
 
 const DEFAULT_LEVEL_RATES_SEED = {
@@ -362,6 +363,93 @@ function deepClone(val) {
   return out;
 }
 
+function compactForLocalStorage(node, maxStrLen = 8192) {
+  if (typeof node === 'string') {
+    if (node.startsWith('data:') && node.length > maxStrLen) {
+      return '';
+    }
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map((item) => compactForLocalStorage(item, maxStrLen));
+  }
+  if (node && typeof node === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      out[k] = compactForLocalStorage(v, maxStrLen);
+    }
+    return out;
+  }
+  return node;
+}
+
+function mergeTreeCollections(target, source) {
+  if (!source || typeof source !== 'object') return target;
+  const out = { ...target };
+  for (const [col, val] of Object.entries(source)) {
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      if (col === 'media_gallery') {
+        out.media_gallery = {
+          videos: { ...(out.media_gallery?.videos || {}), ...(val.videos || {}) },
+          posters: { ...(out.media_gallery?.posters || {}), ...(val.posters || {}) },
+        };
+      } else {
+        out[col] = { ...(out[col] && typeof out[col] === 'object' ? out[col] : {}), ...val };
+      }
+    } else if (val !== undefined) {
+      out[col] = val;
+    }
+  }
+  return out;
+}
+
+function openIdb() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const database = req.result;
+        if (!database.objectStoreNames.contains(IDB_STORE)) {
+          database.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function saveTreeToIdb(treeSnapshot) {
+  const database = await openIdb();
+  if (!database) return;
+  try {
+    await new Promise((resolve) => {
+      const tx = database.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(treeSnapshot, 'tree');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {}
+}
+
+async function loadTreeFromIdb() {
+  const database = await openIdb();
+  if (!database) return null;
+  try {
+    return await new Promise((resolve) => {
+      const tx = database.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get('tree');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
 function loadInitialTree() {
   const seed = createInitialSeedData();
   if (typeof localStorage === 'undefined') return seed;
@@ -373,7 +461,7 @@ function loadInitialTree() {
     }
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object') {
-      const merged = { ...seed, ...parsed };
+      const merged = mergeTreeCollections(seed, parsed);
       if (!merged.users || typeof merged.users !== 'object') merged.users = { ...seed.users };
       if (!merged.users.root_sponsor_ucwf_0001) {
         merged.users.root_sponsor_ucwf_0001 = seed.users.root_sponsor_ucwf_0001;
@@ -392,17 +480,17 @@ function loadInitialTree() {
 }
 
 let dbTree = loadInitialTree();
-const listeners = new Map(); // listenerId -> { segments, filterOpts, callback }
+const listeners = new Map();
 let listenerSeq = 1;
 let broadcastChannel = null;
-const pendingFirestoreSync = new Map(); // "col/docId" -> { colName, docId, op: 'set'|'delete' }
+const pendingFirestoreSync = new Map();
 
 if (typeof BroadcastChannel !== 'undefined') {
   try {
     broadcastChannel = new BroadcastChannel(SYNC_CHANNEL_NAME);
     broadcastChannel.onmessage = (event) => {
       if (event?.data?.type === 'tree_update' && event.data.tree) {
-        dbTree = event.data.tree;
+        dbTree = mergeTreeCollections(createInitialSeedData(), event.data.tree);
         notifyAllListeners();
       }
     };
@@ -415,7 +503,7 @@ if (typeof window !== 'undefined') {
       try {
         const next = JSON.parse(event.newValue);
         if (next && typeof next === 'object') {
-          dbTree = next;
+          dbTree = mergeTreeCollections(dbTree, next);
           notifyAllListeners();
         }
       } catch {}
@@ -424,16 +512,27 @@ if (typeof window !== 'undefined') {
 }
 
 function persistLocalTree() {
+  const snapshot = deepClone(dbTree);
+  if (typeof indexedDB !== 'undefined') {
+    saveTreeToIdb(snapshot);
+  }
   if (typeof localStorage !== 'undefined') {
     try {
-      localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(dbTree));
+      const compact = compactForLocalStorage(snapshot, 4096);
+      localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(compact));
     } catch (e) {
-      console.warn('localStorage quota warning:', e?.message || e);
+      try {
+        // Ultra-compact fallback: strip all data URLs so member records ALWAYS persist
+        const ultraCompact = compactForLocalStorage(snapshot, 128);
+        localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(ultraCompact));
+      } catch (innerErr) {
+        console.warn('localStorage quota warning:', innerErr?.message || e?.message);
+      }
     }
   }
   if (broadcastChannel) {
     try {
-      broadcastChannel.postMessage({ type: 'tree_update', tree: dbTree });
+      broadcastChannel.postMessage({ type: 'tree_update', tree: snapshot });
     } catch {}
   }
 }
@@ -595,6 +694,18 @@ function canWriteCollectionToFirestore(colName) {
   return ['users', 'payment_requests', 'withdrawals', 'media_submissions'].includes(colName);
 }
 
+export function getCloudSyncStatus() {
+  const u = auth?.currentUser || null;
+  return {
+    isCloudAuthenticated: Boolean(u && u.emailVerified),
+    email: u?.email || null,
+    isAdminEmail: Boolean(u?.emailVerified && u?.email === BOOTSTRAPPED_ADMIN_EMAIL),
+    projectId: firebaseConfig.projectId,
+    databaseId: firebaseConfig.firestoreDatabaseId,
+    pendingSyncCount: pendingFirestoreSync.size,
+  };
+}
+
 async function pushTargetToFirestore(target, forceOp = null) {
   if (typeof window === 'undefined' || !target) return;
   const { colName, docId, localSegments, extra } = target;
@@ -663,7 +774,7 @@ function mergeRemoteCollectionSnapshot(colName, snap) {
       dbTree.media_gallery[kind][rawId] = data;
       changed = true;
     } else {
-      dbTree[colName][docSnap.id] = data;
+      dbTree[colName][docSnap.id] = { ...(dbTree[colName][docSnap.id] || {}), ...data };
       changed = true;
     }
   });
@@ -708,7 +819,6 @@ function attachPublicFirestoreListeners() {
   for (const colName of PUBLIC_COLLECTIONS) {
     attachCollectionListener(colName, collection(firestoreDb, colName), colName);
   }
-  // Approved community gallery submissions are publicly readable per firestore.rules
   attachCollectionListener(
     'media_submissions',
     fsQuery(collection(firestoreDb, 'media_submissions'), fsWhere('status', '==', 'approved')),
@@ -751,6 +861,14 @@ function attachAuthenticatedFirestoreListeners(user) {
 function ensureFirestoreBootstrapped() {
   if (fsBootstrapped || typeof window === 'undefined') return;
   fsBootstrapped = true;
+
+  // Hydrate full high-res assets & extra records from IndexedDB cleanly
+  loadTreeFromIdb().then((idbTree) => {
+    if (idbTree && typeof idbTree === 'object') {
+      dbTree = mergeTreeCollections(idbTree, dbTree);
+      notifyAllListeners();
+    }
+  });
 
   testConnection();
   attachPublicFirestoreListeners();
@@ -870,7 +988,6 @@ export async function update(targetRef, updatesObj) {
   const fsTargets = new Map();
 
   if (baseSegs.length === 0) {
-    // Multi-path root update: { "users/u1/walletBalance": 200, "transactions/tx1": {...} }
     for (const [relPath, val] of Object.entries(updatesObj)) {
       const fullSegs = splitPath(relPath);
       setValueAtSegments(fullSegs, val, false);
@@ -944,7 +1061,6 @@ export function onValue(targetRef, callback, errorCallback) {
 
   listeners.set(id, { segments, filterOpts, callback });
 
-  // Immediately deliver hydrated snapshot synchronously / next microtask without blocking
   try {
     const val = getValueAtSegments(segments);
     callback(buildSnapshot(segments, val, filterOpts));
@@ -977,6 +1093,7 @@ export default {
   rtdb,
   googleProvider,
   testConnection,
+  getCloudSyncStatus,
   OperationType,
   handleFirestoreError,
 };

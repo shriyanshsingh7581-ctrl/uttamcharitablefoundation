@@ -89,6 +89,7 @@ const DESIGNATION_OPTIONS = [
 export default function PaperRegistrationForm({ 
   isAdminMode = false, 
   onSuccessCallback = null,
+  onCloseModal = null,
   initialSponsorId = '9540648402',
   initialPackageId = 'tier_500'
 }) {
@@ -558,6 +559,7 @@ export default function PaperRegistrationForm({
         password: cleanPassword,
         plainPassword: cleanPassword,
         isAdminMode: isAdminMode,
+        preserveSession: isAdminMode,
         packageAmount: numAmount,
         packageTier: numAmount,
         packageName: `सहयोग संकल्प (₹${numAmount})`,
@@ -809,6 +811,17 @@ export default function PaperRegistrationForm({
         </div>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+          {onCloseModal && (
+            <button
+              type="button"
+              onClick={onCloseModal}
+              className="w-full sm:w-auto px-6 py-3.5 rounded-2xl bg-pink-600 hover:bg-pink-700 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg cursor-pointer"
+            >
+              <CheckCircle2 className="w-4 h-4 text-pink-100" />
+              <span>लिस्ट में देखें (View Members List)</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={handlePrint}
