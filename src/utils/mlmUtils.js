@@ -475,7 +475,8 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}, customRat
     directList: [],
     fullDownlineList: [],
     allDownlineMembers: [],
-    levelBreakdown: emptyBreakdown
+    levelBreakdown: emptyBreakdown,
+    levels: emptyBreakdown
   };
 
   if (!targetUser) return emptyResult;
@@ -604,7 +605,8 @@ export function buildMember12LevelReport(targetUser, allUsersMap = {}, customRat
     directList: levelBreakdown[0]?.members || [],
     fullDownlineList,
     allDownlineMembers: fullDownlineList,
-    levelBreakdown
+    levelBreakdown,
+    levels: levelBreakdown
   };
 }
 

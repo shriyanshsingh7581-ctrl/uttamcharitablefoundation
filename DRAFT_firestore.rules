@@ -1,0 +1,415 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdminEmail() {
+      return isVerified() && request.auth.token.email == 'singhshriyansh51@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdminEmail() ||
+        (isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isOwner(uid) {
+      return isVerified() && request.auth.uid == uid;
+    }
+
+    function isStrLen(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isOptStrLen(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptNum(data, key) {
+      return !(key in data) || (data[key] is int || data[key] is float);
+    }
+
+    // 3. Entity Validation Blueprints (The Anti-Update-Gap + Anti-Shadow-Field)
+    function isValidUser(data, userId) {
+      return data.keys().hasAll(['uid', 'memberId', 'name', 'status']) &&
+        data.keys().hasOnly([
+          'uid', 'memberId', 'name', 'displayName', 'salutation', 'padNaam',
+          'phone', 'email', 'sponsorId', 'sponsorName', 'sponsorPhone',
+          'packageTier', 'packageAmount', 'packageName', 'selfBusiness',
+          'selfBusinessCommission', 'walletBalance', 'totalEarned', 'totalWithdrawn',
+          'directBusiness', 'directTeamBusiness', 'teamBusiness', 'downlineBusiness',
+          'directCommission', 'directTeamCommission', 'downlineCommission', 'totalCommission',
+          'status', 'isApproved', 'paymentVerified', 'kycVerified', 'documentsVerified',
+          'city', 'state', 'dob', 'bloodGroup', 'occupation', 'qualification', 'gender',
+          'fatherOrSpouseName', 'fatherName', 'motherName', 'permanentAddress',
+          'permanentPincode', 'currentAddress', 'currentPincode', 'address', 'pincode',
+          'photoUrl', 'avatar_url', 'signatureUrl', 'aadhaarDocUrl', 'aadhaarBackDocUrl',
+          'panDocUrl', 'paymentReceiptUrl', 'photoDocName', 'signatureDocName',
+          'aadhaarDocName', 'aadhaarBackDocName', 'panDocName', 'paymentReceiptName',
+          'aadhaarNumber', 'panNumber', 'bankDetails', 'paymentMode', 'paymentMethod',
+          'utrNumber', 'officeName1', 'officePhone1', 'officeProposedPost2', 'officePhone2',
+          'declarationAccepted', 'applicationDate', 'joiningDate', 'createdAt',
+          'timestamp', 'updatedAt', 'role', 'is_admin', 'isAdminMode', 'username'
+        ]) &&
+        data.uid == userId &&
+        isValidId(data.uid) &&
+        isStrLen(data.memberId, 2, 64) &&
+        isStrLen(data.name, 1, 120) &&
+        data.status in ['active', 'pending', 'inactive', 'suspended'] &&
+        isOptStrLen(data, 'displayName', 140) &&
+        isOptStrLen(data, 'salutation', 20) &&
+        isOptStrLen(data, 'padNaam', 120) &&
+        isOptStrLen(data, 'phone', 20) &&
+        isOptStrLen(data, 'email', 120) &&
+        isOptStrLen(data, 'sponsorId', 64) &&
+        isOptStrLen(data, 'sponsorName', 140) &&
+        isOptStrLen(data, 'sponsorPhone', 20) &&
+        isOptStrLen(data, 'photoUrl', 300000) &&
+        isOptStrLen(data, 'signatureUrl', 200000) &&
+        isOptStrLen(data, 'aadhaarDocUrl', 300000) &&
+        isOptStrLen(data, 'aadhaarBackDocUrl', 300000) &&
+        isOptStrLen(data, 'panDocUrl', 300000) &&
+        isOptStrLen(data, 'paymentReceiptUrl', 300000) &&
+        isOptNum(data, 'packageTier') &&
+        isOptNum(data, 'packageAmount') &&
+        isOptNum(data, 'selfBusiness') &&
+        isOptNum(data, 'walletBalance') &&
+        isOptNum(data, 'totalEarned') &&
+        isOptNum(data, 'totalWithdrawn') &&
+        (!( 'role' in data ) || data.role in ['member', 'admin']) &&
+        (!( 'is_admin' in data ) || data.is_admin is bool);
+    }
+
+    function isValidPaymentRequest(data, requestId) {
+      return data.keys().hasAll(['id', 'userId', 'amount', 'status']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'memberId', 'userName', 'email', 'phone', 'sponsorId',
+          'amount', 'packageName', 'paymentMode', 'paymentMethod', 'status',
+          'utrNumber', 'paymentReceiptUrl', 'aadhaarDocUrl', 'panDocUrl',
+          'createdAt', 'timestamp', 'updatedAt', 'approvedAt'
+        ]) &&
+        data.id == requestId &&
+        isValidId(data.id) &&
+        isStrLen(data.userId, 1, 128) &&
+        (data.amount is int || data.amount is float) &&
+        data.amount >= 0 &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        isOptStrLen(data, 'memberId', 64) &&
+        isOptStrLen(data, 'userName', 140) &&
+        isOptStrLen(data, 'utrNumber', 100) &&
+        isOptStrLen(data, 'paymentMethod', 80);
+    }
+
+    function isValidWithdrawal(data, withdrawalId) {
+      return data.keys().hasAll(['id', 'userId', 'amount', 'status']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'memberId', 'userName', 'phone', 'amount', 'status',
+          'bankDetails', 'upiId', 'transactionRef', 'remarks', 'createdAt',
+          'updatedAt', 'paidAt', 'timestamp'
+        ]) &&
+        data.id == withdrawalId &&
+        isValidId(data.id) &&
+        isStrLen(data.userId, 1, 128) &&
+        (data.amount is int || data.amount is float) &&
+        data.amount > 0 &&
+        data.status in ['pending', 'approved', 'paid', 'rejected'] &&
+        isOptStrLen(data, 'memberId', 64);
+    }
+
+    function isValidTransaction(data, txId) {
+      return data.keys().hasAll(['id', 'userId', 'type', 'amount']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'memberId', 'type', 'amount', 'description',
+          'fromMemberId', 'fromName', 'level', 'status', 'createdAt', 'timestamp'
+        ]) &&
+        data.id == txId &&
+        isValidId(data.id) &&
+        isStrLen(data.userId, 1, 128) &&
+        isStrLen(data.type, 1, 40) &&
+        (data.amount is int || data.amount is float) &&
+        isOptStrLen(data, 'description', 300);
+    }
+
+    function isValidPayoutRecord(data, recordId) {
+      return data.keys().hasAll(['id', 'amount']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'memberId', 'memberName', 'amount', 'totalDistributed',
+          'trustShare', 'payouts', 'status', 'paymentMode', 'referenceNo',
+          'remarks', 'date', 'createdAt', 'timestamp'
+        ]) &&
+        data.id == recordId &&
+        isValidId(data.id) &&
+        (data.amount is int || data.amount is float) &&
+        data.amount >= 0 &&
+        isOptStrLen(data, 'memberId', 64) &&
+        isOptNum(data, 'totalDistributed') &&
+        isOptNum(data, 'trustShare');
+    }
+
+    function isValidSpendRecord(data, spendId) {
+      return data.keys().hasAll(['id', 'title', 'amount']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'category', 'amount', 'date', 'description',
+          'location', 'beneficiaryCount', 'receiptUrl', 'createdAt', 'timestamp'
+        ]) &&
+        data.id == spendId &&
+        isValidId(data.id) &&
+        isStrLen(data.title, 1, 200) &&
+        (data.amount is int || data.amount is float) &&
+        data.amount >= 0 &&
+        isOptStrLen(data, 'category', 80) &&
+        isOptStrLen(data, 'date', 40) &&
+        isOptStrLen(data, 'description', 1000);
+    }
+
+    function isValidMediaSubmission(data, mediaId) {
+      return data.keys().hasAll(['id', 'mediaUrl', 'status']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'memberId', 'userName', 'title', 'description',
+          'category', 'location', 'mediaUrl', 'mediaType', 'status',
+          'createdAt', 'timestamp', 'updatedAt'
+        ]) &&
+        data.id == mediaId &&
+        isValidId(data.id) &&
+        isStrLen(data.mediaUrl, 1, 900000) &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        isOptStrLen(data, 'userId', 128) &&
+        isOptStrLen(data, 'title', 200) &&
+        (!( 'mediaType' in data ) || data.mediaType in ['image', 'video']);
+    }
+
+    function isValidMediaGalleryItem(data, itemId) {
+      return data.keys().hasAll(['id', 'kind']) &&
+        data.keys().hasOnly([
+          'id', 'kind', 'title', 'subtitle', 'url', 'thumbnailUrl',
+          'slot', 'active', 'featured', 'createdAt', 'timestamp'
+        ]) &&
+        data.id == itemId &&
+        isValidId(data.id) &&
+        data.kind in ['videos', 'posters'] &&
+        isOptStrLen(data, 'title', 200) &&
+        isOptStrLen(data, 'url', 900000) &&
+        (!( 'active' in data ) || data.active is bool) &&
+        (!( 'featured' in data ) || data.featured is bool);
+    }
+
+    function isValidDailyClosing(data, closingId) {
+      return data.keys().hasAll(['date']) &&
+        data.keys().hasOnly([
+          'date', 'totalJoining', 'totalCommission', 'trustShare',
+          'newMembersCount', 'memberReports', 'createdAt', 'timestamp', 'status'
+        ]) &&
+        data.date == closingId &&
+        data.date is string &&
+        data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        isOptNum(data, 'totalJoining') &&
+        isOptNum(data, 'totalCommission') &&
+        isOptNum(data, 'trustShare');
+    }
+
+    function isValidEventEntry(data, eventId) {
+      return data.keys().hasAll(['id', 'title']) &&
+        data.keys().hasOnly([
+          'id', 'title', 'description', 'date', 'location', 'imageUrl',
+          'status', 'createdAt', 'timestamp'
+        ]) &&
+        data.id == eventId &&
+        isValidId(data.id) &&
+        isStrLen(data.title, 1, 200) &&
+        isOptStrLen(data, 'date', 40);
+    }
+
+    function isValidSettingEntry(data, settingId) {
+      return data.keys().hasAll(['key']) &&
+        data.keys().hasOnly(['key', 'value', 'updatedAt']) &&
+        data.key == settingId &&
+        isStrLen(data.key, 1, 64) &&
+        isOptNum(data, 'updatedAt');
+    }
+
+    // 4. Connection Health Endpoint (test/connection)
+    match /test/{docId} {
+      allow get: if isValidId(docId) && docId == 'connection';
+    }
+
+    // 5. Admins Registry
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow create, update, delete: if isValidId(adminId) && isBootstrappedAdminEmail();
+    }
+
+    // 6. Users & Mirrors (Strict PII Isolation)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isBootstrappedAdminEmail());
+      allow create: if isValidId(userId) &&
+        isValidUser(incoming(), userId) &&
+        (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            (!('role' in incoming()) || incoming().role == 'member') &&
+            (!('is_admin' in incoming()) || incoming().is_admin == false) &&
+            (!('walletBalance' in incoming()) || incoming().walletBalance == 0) &&
+            (!('totalEarned' in incoming()) || incoming().totalEarned == 0)
+          )
+        );
+      allow update: if isValidId(userId) &&
+        isValidUser(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'displayName', 'salutation', 'phone', 'email',
+              'city', 'state', 'dob', 'bloodGroup', 'occupation',
+              'qualification', 'permanentAddress', 'permanentPincode',
+              'currentAddress', 'currentPincode', 'photoUrl', 'avatar_url',
+              'signatureUrl', 'aadhaarDocUrl', 'aadhaarBackDocUrl',
+              'panDocUrl', 'bankDetails'
+            ])
+          )
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    match /members/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isBootstrappedAdminEmail());
+      allow create: if isValidId(userId) && isValidUser(incoming(), userId) && isAdmin();
+      allow update: if isValidId(userId) && isValidUser(incoming(), userId) && isAdmin();
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    match /wallets/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isBootstrappedAdminEmail());
+      allow create, update, delete: if isValidId(userId) && isAdmin();
+    }
+
+    // 7. Financial & Payment Ledgers
+    match /payment_requests/{requestId} {
+      allow get: if isValidId(requestId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.userId == request.auth.uid || isBootstrappedAdminEmail());
+      allow create: if isValidId(requestId) &&
+        isValidPaymentRequest(incoming(), requestId) &&
+        (isAdmin() || (isVerified() && incoming().userId == request.auth.uid && incoming().status == 'pending'));
+      allow update: if isValidId(requestId) &&
+        isValidPaymentRequest(incoming(), requestId) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        isAdmin();
+      allow delete: if isValidId(requestId) && isAdmin();
+    }
+
+    match /withdrawals/{withdrawalId} {
+      allow get: if isValidId(withdrawalId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.userId == request.auth.uid || isBootstrappedAdminEmail());
+      allow create: if isValidId(withdrawalId) &&
+        isValidWithdrawal(incoming(), withdrawalId) &&
+        (isAdmin() || (isVerified() && incoming().userId == request.auth.uid && incoming().status == 'pending'));
+      allow update: if isValidId(withdrawalId) &&
+        isValidWithdrawal(incoming(), withdrawalId) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        isAdmin();
+      allow delete: if isValidId(withdrawalId) && isAdmin();
+    }
+
+    match /transactions/{transactionId} {
+      allow get: if isValidId(transactionId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.userId == request.auth.uid || isBootstrappedAdminEmail());
+      allow create: if isValidId(transactionId) && isValidTransaction(incoming(), transactionId) && isAdmin();
+      allow update: if isValidId(transactionId) && isValidTransaction(incoming(), transactionId) && isAdmin();
+      allow delete: if isValidId(transactionId) && isAdmin();
+    }
+
+    match /payout_records/{recordId} {
+      allow get: if isValidId(recordId) && isAdmin();
+      allow list: if isBootstrappedAdminEmail();
+      allow create: if isValidId(recordId) && isValidPayoutRecord(incoming(), recordId) && isAdmin();
+      allow update: if isValidId(recordId) && isValidPayoutRecord(incoming(), recordId) && isAdmin();
+      allow delete: if isValidId(recordId) && isAdmin();
+    }
+
+    match /payout_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isBootstrappedAdminEmail();
+      allow create: if isValidId(logId) && isValidPayoutRecord(incoming(), logId) && isAdmin();
+      allow update: if isValidId(logId) && isValidPayoutRecord(incoming(), logId) && isAdmin();
+      allow delete: if isValidId(logId) && isAdmin();
+    }
+
+    // 8. Public Non-PII Foundation Transparency & Configuration Collections
+    match /spends/{spendId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(spendId) && isValidSpendRecord(incoming(), spendId) && isAdmin();
+      allow delete: if isValidId(spendId) && isAdmin();
+    }
+
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId) && isAdmin();
+      allow list: if isBootstrappedAdminEmail();
+      allow create, update: if isValidId(expenseId) && isValidSpendRecord(incoming(), expenseId) && isAdmin();
+      allow delete: if isValidId(expenseId) && isAdmin();
+    }
+
+    match /events/{eventId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(eventId) && isValidEventEntry(incoming(), eventId) && isAdmin();
+      allow delete: if isValidId(eventId) && isAdmin();
+    }
+
+    match /daily_closings/{closingId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(closingId) && isValidDailyClosing(incoming(), closingId) && isAdmin();
+      allow delete: if isValidId(closingId) && isAdmin();
+    }
+
+    match /media_submissions/{mediaId} {
+      allow get: if isValidId(mediaId) && (existing().status == 'approved' || (isVerified() && (existing().userId == request.auth.uid || isAdmin())));
+      allow list: if resource.data.status == 'approved' || isBootstrappedAdminEmail();
+      allow create: if isValidId(mediaId) &&
+        isValidMediaSubmission(incoming(), mediaId) &&
+        (isAdmin() || (isVerified() && incoming().status == 'pending' && incoming().userId == request.auth.uid));
+      allow update: if isValidId(mediaId) && isValidMediaSubmission(incoming(), mediaId) && isAdmin();
+      allow delete: if isValidId(mediaId) && isAdmin();
+    }
+
+    match /media_gallery/{itemId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(itemId) && isValidMediaGalleryItem(incoming(), itemId) && isAdmin();
+      allow delete: if isValidId(itemId) && isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(settingId) && isValidSettingEntry(incoming(), settingId) && isAdmin();
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+  }
+}

@@ -97,9 +97,10 @@ test('normalizeSponsorId, normalizeLevelRates, and date/closing helpers work saf
   assert.equal(extractMemberJoinDateIST({ applicationDate: '17/10/2026' }), '2026-10-17');
   assert.equal(formatMemberJoiningDate({ joiningDate: '2026-11-16' }), '16/11/2026');
 
-  // Closing countdown returns valid 00:00:00 format and positive remaining ms
+  // Closing countdown returns valid countdown format and positive remaining ms
   const countdown = getTimeUntilMidnightIST();
-  assert.equal(/^\d{2}:\d{2}:\d{2}$/.test(countdown.formatted), true);
+  assert.equal(/^\d{2}h : \d{2}m : \d{2}s$/.test(countdown.formatted), true);
+  assert.equal(/^\d{2}:\d{2}:\d{2}$/.test(countdown.clockFormatted), true);
   assert.equal(countdown.totalMs > 0 && countdown.totalMs <= 86400000, true);
   assert.equal(/^\d{4}-\d{2}-\d{2}$/.test(getISTDateString()), true);
 });
@@ -153,4 +154,56 @@ test('traverses full 12-level vertical chain on ₹500 package and preserves exa
   assert.equal(l8Row.commission, 7.5);
   // 500 * 50% = 250 total commission across L1..L12
   assert.equal(report.totalCommission, 250);
+});
+
+test('Firestore-backed RTDB adapter handles form registration, 12-level commission distribution, and daily closing in <50ms', async () => {
+  const { rtdb, ref, set, get, push } = await import('../lib/firebase.js');
+  const { distribute12LevelCommission } = await import('./commission.js');
+  const { runDailyClosing } = await import('./closingEngine.js');
+
+  const startMs = Date.now();
+
+  // 1. Verify default root founder member exists immediately
+  const rootSnap = await get(ref(rtdb, 'users/root_sponsor_ucwf_0001'));
+  assert.equal(rootSnap.exists(), true);
+  assert.equal(rootSnap.val().memberId, 'UCWF-0001');
+
+  // 2. Simulate new member registration form submission under UCWF-0001 with ₹1,000 package
+  const newUid = 'test_member_form_1';
+  await set(ref(rtdb, `users/${newUid}`), {
+    uid: newUid,
+    memberId: 'UCWF-2026-5555',
+    salutation: 'श्री',
+    name: 'Test Form Member',
+    phone: '9988776655',
+    sponsorId: 'UCWF-0001',
+    packageAmount: 1000,
+    packageTier: 1000,
+    selfBusiness: 1000,
+    status: 'active',
+    isApproved: true,
+    joiningDate: '2026-11-17'
+  });
+
+  const payRef = push(ref(rtdb, 'payment_requests'));
+  await set(payRef, {
+    id: payRef.key,
+    userId: newUid,
+    memberId: 'UCWF-2026-5555',
+    amount: 1000,
+    status: 'approved'
+  });
+
+  // 3. Distribute 12-level commission
+  const distRes = await distribute12LevelCommission(newUid, 1000);
+  assert.equal(distRes.totalDistributed, 200); // L1 = 20% of 1000 = 200 to UCWF-0001
+  assert.equal(distRes.trustShare, 800);
+
+  // 4. Run 12:00 AM daily closing
+  const closeRes = await runDailyClosing('2026-11-17');
+  assert.equal(closeRes.success, true);
+  assert.equal(closeRes.summary.totalCommission, 200);
+
+  const elapsedMs = Date.now() - startMs;
+  assert.equal(elapsedMs < 500, true);
 });

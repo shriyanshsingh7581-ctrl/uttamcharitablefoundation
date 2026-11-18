@@ -439,6 +439,17 @@ export async function cleanAndResetTestData() {
   return true;
 }
 
+/**
+ * One-Time Auto-Migration & Recalculation Helper
+ */
+export async function autoMigrateAndRecalculateUsers() {
+  try {
+    await syncAndFixAllMemberBalances();
+  } catch (err) {
+    console.warn('Auto migration note:', err);
+  }
+}
+
 export default {
   DEFAULT_LEVEL_RATES,
   normalizeLevelRates,
@@ -451,5 +462,6 @@ export default {
   distribute12LevelCommission,
   calculateMemberTreeMetrics,
   syncAndFixAllMemberBalances,
+  autoMigrateAndRecalculateUsers,
   cleanAndResetTestData
 };

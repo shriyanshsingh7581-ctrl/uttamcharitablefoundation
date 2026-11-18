@@ -1,5 +1,4 @@
-import { rtdb } from '../lib/firebase';
-import { ref, get, update } from 'firebase/database';
+import { rtdb, ref, get, update } from '../lib/firebase';
 import {
   DEFAULT_LEVEL_RATES,
   round2,
@@ -65,9 +64,11 @@ export function getTimeUntilMidnightIST() {
     minutes,
     seconds,
     diffMs,
+    totalMs: diffMs,
     closingTimeLabel: '12:00 AM IST',
     currentISTDate: epochMsToISTDateString(nowUtcMs),
     currentISTTimeFormatted: `${String(curH12).padStart(2, '0')}:${String(curM).padStart(2, '0')}:${String(curS).padStart(2, '0')} ${ampm} IST`,
+    clockFormatted: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`,
     formatted: `${String(hours).padStart(2, '0')}h : ${String(minutes).padStart(2, '0')}m : ${String(seconds).padStart(2, '0')}s`
   };
 }
@@ -299,4 +300,50 @@ export async function autoMigrateAndRecalculateUsers() {
   } catch (err) {
     console.warn('Auto migration warning:', err);
   }
+}
+
+/**
+ * Clean & Reset All Software Test Data in Firebase RTDB
+ */
+export async function cleanAndResetTestData() {
+  const updates = {};
+  updates['/users'] = null;
+  updates['/payment_requests'] = null;
+  updates['/withdrawals'] = null;
+  updates['/daily_closings'] = null;
+  updates['/closings'] = null;
+  updates['/transactions'] = null;
+  updates['/payout_records'] = null;
+
+  updates['/settings/levelRates'] = { ...DEFAULT_LEVEL_RATES };
+  updates['/settings/selfBusinessRate'] = 0;
+
+  const rootUid = 'root_sponsor_ucwf_0001';
+  updates[`/users/${rootUid}`] = {
+    uid: rootUid,
+    memberId: 'UCWF-0001',
+    salutation: 'डॉ.',
+    name: 'राजेन्द्र सिंह सैनी',
+    displayName: 'डॉ. राजेन्द्र सिंह सैनी',
+    email: 'uttamcharitablewelfarefoundati@gmail.com',
+    phone: '9540648402',
+    sponsorId: 'DIRECT',
+    role: 'admin',
+    designation: 'संस्थापक / राष्ट्रीय अध्यक्ष',
+    padNaam: 'संस्थापक / राष्ट्रीय अध्यक्ष',
+    packageAmount: 11000,
+    packageTier: 11000,
+    selfBusiness: 11000,
+    walletBalance: 0,
+    totalCommission: 0,
+    commissionPaid: 0,
+    commissionUnpaid: 0,
+    status: 'active',
+    isApproved: true,
+    createdAt: new Date().toISOString(),
+    timestamp: Date.now()
+  };
+
+  await update(ref(rtdb), updates);
+  return true;
 }
