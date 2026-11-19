@@ -25,8 +25,6 @@ import {
   getMemberFullName,
 } from '../utils/mlmUtils';
 
-const BOOTSTRAPPED_ADMIN_EMAIL = 'singhshriyansh51@gmail.com';
-
 const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
@@ -191,7 +189,6 @@ export const AuthProvider = ({ children }) => {
                 if (
                   data.is_admin === true ||
                   data.role === 'admin' ||
-                  gEmail === BOOTSTRAPPED_ADMIN_EMAIL ||
                   gEmail === 'admin@ucwf.online' ||
                   gEmail === 'admin@uttam.org' ||
                   localStorage.getItem('ucwf_admin_session') === 'true'
@@ -205,7 +202,7 @@ export const AuthProvider = ({ children }) => {
                 setUser(firebaseUser);
                 setMember(null);
                 const gEmail = (firebaseUser.email || '').trim().toLowerCase();
-                if (gEmail === BOOTSTRAPPED_ADMIN_EMAIL) {
+                if (gEmail === 'admin@ucwf.online') {
                   setIsAdmin(true);
                   try {
                     localStorage.setItem('ucwf_admin_session', 'true');
@@ -602,7 +599,7 @@ export const AuthProvider = ({ children }) => {
     const uid = googleUser.uid;
 
     const googleEmail = (googleUser.email || '').trim().toLowerCase();
-    const isGoogleAdmin = googleEmail === BOOTSTRAPPED_ADMIN_EMAIL || googleEmail === 'admin@ucwf.online';
+    const isGoogleAdmin = googleEmail === 'admin@ucwf.online';
 
     const userRef = ref(db, `users/${uid}`);
     const snap = await get(userRef);

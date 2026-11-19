@@ -62,7 +62,7 @@ import { useDiwaliTheme } from '../contexts/DiwaliThemeContext';
 import DiwaliBanner from '../components/diwali/DiwaliBanner';
 import GlowingDiya from '../components/diwali/GlowingDiya';
 import { uploadToCloudinary } from '../lib/cloudinary';
-import { rtdb, getCloudSyncStatus, onCloudSyncChange, forceSyncAllToCloud } from '../lib/firebase';
+import { rtdb } from '../lib/firebase';
 import { ref, onValue, update, remove, push, set } from 'firebase/database';
 import { 
   getSavedLevelRates, 
@@ -119,12 +119,9 @@ import PaidPayoutSection from '../components/PaidPayoutSection';
 
 export default function AdminPanel() {
   const navigate = useNavigate();
-  const { logout, loginWithGoogle, user: authUser } = useAuth();
+  const { logout } = useAuth();
   const { isDiwaliActive, toggleDiwaliTheme } = useDiwaliTheme();
-  const [cloudSyncLoading, setCloudSyncLoading] = useState(false);
-  const [cloudSync, setCloudSync] = useState(() => getCloudSyncStatus());
   const [preselectedSponsorId, setPreselectedSponsorId] = useState('');
-  useEffect(() => onCloudSyncChange(setCloudSync), []);
   const [activeTab, setActiveTab] = useState('my-report'); // 'members' | 'payments' | 'withdrawals' | 'media' | 'settings' | 'video-posters'
   
   // Video & Poster Manager States (Requirement 2 & 3)
@@ -2023,61 +2020,6 @@ export default function AdminPanel() {
 
           {/* Action Toolbar & Countdown Badge */}
           <div className="flex flex-wrap items-center gap-3">
-            {/* Cloud Firestore Google Auth Sync Status & Manual Force Sync */}
-            {cloudSync.isCloudAuthenticated ? (
-              <div className="flex items-center gap-2">
-                <span
-                  className="px-3 py-1.5 rounded-2xl bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold text-xs flex items-center gap-1.5"
-                  title={`Firestore Cloud Sync Active (${cloudSync.email || authUser?.email || 'Connected'})`}
-                >
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>Cloud Sync: Live{cloudSync.email ? ` (${cloudSync.email})` : ''}</span>
-                </span>
-                <button
-                  type="button"
-                  disabled={cloudSyncLoading}
-                  onClick={async () => {
-                    setCloudSyncLoading(true);
-                    try {
-                      const res = await forceSyncAllToCloud();
-                      showToast(`Cloud Sync पूर्ण: ${res.synced} रिकॉर्ड सिंक हुए${res.pending > 0 ? `, ${res.pending} लंबित` : ' (0 लंबित)'}।`);
-                    } catch (err) {
-                      showToast('Cloud Sync त्रुटि: ' + (err?.message || err), 'error');
-                    } finally {
-                      setCloudSyncLoading(false);
-                    }
-                  }}
-                  className="px-3 py-1.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition cursor-pointer disabled:opacity-50"
-                  title="Force push all local members & records to Cloud Firestore right now"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncLoading ? 'animate-spin' : ''}`} />
-                  <span>Sync Now{cloudSync.pendingSyncCount > 0 ? ` (${cloudSync.pendingSyncCount})` : ''}</span>
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                disabled={cloudSyncLoading}
-                onClick={async () => {
-                  setCloudSyncLoading(true);
-                  try {
-                    const cred = await loginWithGoogle();
-                    const res = await forceSyncAllToCloud();
-                    showToast(`Google Cloud Sync सक्रिय (${cred?.user?.email || ''}) — ${res.synced} रिकॉर्ड सिंक हुए!`);
-                  } catch (err) {
-                    showToast('Cloud Sync त्रुटि: ' + (err?.message || 'Google लॉगिन रद्द या विफल रहा'), 'error');
-                  } finally {
-                    setCloudSyncLoading(false);
-                  }
-                }}
-                className="px-3.5 py-2 rounded-2xl bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                title="Enable multi-device Firebase Cloud Firestore sync via Admin Google account (singhshriyansh51@gmail.com)"
-              >
-                {cloudSyncLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />}
-                <span>Connect Cloud Sync{cloudSync.pendingSyncCount > 0 ? ` (${cloudSync.pendingSyncCount} Pending)` : ''}</span>
-              </button>
-            )}
-
             {/* Live Midnight Countdown Timer */}
             <MidnightCountdownBadge onMidnightTrigger={() => {}} />
 
@@ -2188,92 +2130,6 @@ export default function AdminPanel() {
             <span>{safeText(activateAllMsg)}</span>
           </div>
         )}
-
-        {/* Firebase Cloud Firestore Real-Time Sync Status Banner */}
-        <div
-          className={`p-3.5 sm:p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-            cloudSync.isAdminEmail && cloudSync.pendingSyncCount === 0
-              ? 'bg-emerald-50/90 border-emerald-200 text-emerald-900'
-              : 'bg-amber-50/95 border-amber-300 text-amber-950'
-          }`}
-        >
-          <div className="flex items-start sm:items-center gap-2.5 text-xs">
-            <ShieldCheck
-              className={`w-5 h-5 shrink-0 mt-0.5 sm:mt-0 ${
-                cloudSync.isAdminEmail && cloudSync.pendingSyncCount === 0
-                  ? 'text-emerald-600'
-                  : 'text-amber-600'
-              }`}
-            />
-            <div>
-              <p className="font-black">
-                {cloudSync.isAdminEmail
-                  ? cloudSync.pendingSyncCount === 0
-                    ? `Firebase Cloud Firestore Live Connected (${cloudSync.email})`
-                    : `Firebase Cloud Sync Pending (${cloudSync.pendingSyncCount} records queued)`
-                  : 'डिवाइस लोकल सेव मोड — Cross-Device Cloud Firestore Sync के लिए Google Admin Sign-In करें'}
-              </p>
-              <p className="text-[11px] opacity-85 mt-0.5">
-                {cloudSync.isAdminEmail
-                  ? `Project: ${cloudSync.projectId} • हर नया सदस्य व अपडेट स्वचालित क्लाउड में सिंक हो रहा है।`
-                  : `नए सदस्य अभी तुरंत लिस्ट में जुड़ रहे हैं; सभी डिवाइस पर लाइव Firebase सिंक के लिए "${'singhshriyansh51@gmail.com'}" से कनेक्ट करें।`}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            {!cloudSync.isAdminEmail ? (
-              <button
-                type="button"
-                disabled={cloudSyncLoading}
-                onClick={async () => {
-                  setCloudSyncLoading(true);
-                  try {
-                    const res = await loginWithGoogle();
-                    const syncRes = await forceSyncAllToCloud();
-                    if (syncRes?.authenticated) {
-                      showToast(`Google Cloud Sync Connected (${res?.user?.email || ''}) — ${syncRes.synced || 0} records synced!`);
-                    } else {
-                      showToast('Signed in. Admin sync requires singhshriyansh51@gmail.com.', 'error');
-                    }
-                  } catch (err) {
-                    showToast('Google Cloud Sync error: ' + (err?.message || 'Cancelled'), 'error');
-                  } finally {
-                    setCloudSyncLoading(false);
-                  }
-                }}
-                className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition active:scale-95 disabled:opacity-50 cursor-pointer"
-              >
-                {cloudSyncLoading ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="w-3.5 h-3.5" />
-                )}
-                <span>Connect Google Cloud Sync</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled={cloudSyncLoading}
-                onClick={async () => {
-                  setCloudSyncLoading(true);
-                  try {
-                    const res = await forceSyncAllToCloud();
-                    showToast(`Cloud Sync Complete: ${res?.synced || 0} synced, ${res?.pending || 0} pending.`);
-                  } catch (err) {
-                    showToast('Cloud sync note: ' + (err?.message || err), 'error');
-                  } finally {
-                    setCloudSyncLoading(false);
-                  }
-                }}
-                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition active:scale-95 disabled:opacity-50 cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncLoading ? 'animate-spin' : ''}`} />
-                <span>{cloudSyncLoading ? 'Syncing...' : 'Sync Cloud Now'}</span>
-              </button>
-            )}
-          </div>
-        </div>
 
         {/* Festive Diwali Greeting Banner in Admin Panel */}
         {isDiwaliActive && <DiwaliBanner compact={true} className="mb-2" />}

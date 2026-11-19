@@ -16,13 +16,12 @@ import { FOUNDATION_DETAILS, safeText } from '../lib/constants';
 
 export default function AdminLogin() {
   const navigate = useNavigate();
-  const { loginAdmin, loginWithGoogle, isAdmin, loading: authLoading } = useAuth();
+  const { loginAdmin, isAdmin, loading: authLoading } = useAuth();
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
@@ -150,7 +149,7 @@ export default function AdminLogin() {
 
           <button
             type="submit"
-            disabled={loading || googleLoading}
+            disabled={loading}
             className="w-full py-3 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 active:scale-[0.99] text-white font-extrabold text-xs shadow-lg shadow-pink-600/20 transition flex items-center justify-center gap-2 disabled:opacity-50 mt-2 cursor-pointer"
           >
             {loading ? (
@@ -166,52 +165,6 @@ export default function AdminLogin() {
             )}
           </button>
         </form>
-
-        <div className="space-y-2">
-          <div className="relative flex py-1 items-center">
-            <div className="flex-grow border-t border-slate-200"></div>
-            <span className="flex-shrink mx-3 text-[10px] font-bold uppercase text-slate-400">
-              OR Cloud Firestore Sync Login
-            </span>
-            <div className="flex-grow border-t border-slate-200"></div>
-          </div>
-
-          <button
-            type="button"
-            disabled={loading || googleLoading}
-            onClick={async () => {
-              setErrorMsg('');
-              setGoogleLoading(true);
-              try {
-                const res = await loginWithGoogle();
-                const signedEmail = (res?.user?.email || '').trim().toLowerCase();
-                if (signedEmail === 'singhshriyansh51@gmail.com' || signedEmail === 'admin@ucwf.online') {
-                  navigate('/admin', { replace: true });
-                } else {
-                  setErrorMsg(`Signed in as ${res?.user?.email}. Cloud Admin sync requires singhshriyansh51@gmail.com, or login above with Admin credentials.`);
-                }
-              } catch (err) {
-                console.error('Google admin login error:', err);
-                setErrorMsg(err?.message || 'Google Sign-In रद्द किया गया या विफल रहा।');
-              } finally {
-                setGoogleLoading(false);
-              }
-            }}
-            className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 font-bold text-xs shadow-xs transition flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-          >
-            {googleLoading ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin text-pink-600" />
-                <span>Connecting Google Cloud Sync...</span>
-              </>
-            ) : (
-              <>
-                <UserCheck className="w-4 h-4 text-emerald-600" />
-                <span>Google से Cloud Sync / Admin Login</span>
-              </>
-            )}
-          </button>
-        </div>
 
         <div className="pt-3 text-center text-xs text-slate-500 border-t border-slate-100 flex flex-col items-center gap-1.5">
           <p>

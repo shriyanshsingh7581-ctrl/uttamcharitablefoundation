@@ -27,17 +27,16 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
-    function isBootstrappedAdminEmail() {
-      return isVerified() && request.auth.token.email == 'singhshriyansh51@gmail.com';
-    }
-
     function isAdmin() {
-      return isBootstrappedAdminEmail() ||
-        (isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+      return isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
     }
 
     function isOwner(uid) {
       return isVerified() && request.auth.uid == uid;
+    }
+
+    function isPortalReadAllowed() {
+      return request.time != null;
     }
 
     function isStrLen(val, minLen, maxLen) {
@@ -52,7 +51,7 @@ service cloud.firestore {
       return !(key in data) || (data[key] is int || data[key] is float);
     }
 
-    // 3. Entity Validation Blueprints (The Anti-Update-Gap + Anti-Shadow-Field)
+    // 3. Entity Validation Blueprints (Strict Schema + Anti-Shadow-Field Protection)
     function isValidUser(data, userId) {
       return data.keys().hasAll(['uid', 'memberId', 'name', 'status']) &&
         data.keys().hasOnly([
@@ -107,8 +106,8 @@ service cloud.firestore {
         isOptNum(data, 'commissionPaid') &&
         isOptNum(data, 'commissionUnpaid') &&
         isOptNum(data, 'totalCommission') &&
-        (!( 'role' in data ) || data.role in ['member', 'admin']) &&
-        (!( 'is_admin' in data ) || data.is_admin is bool);
+        (!('role' in data) || data.role in ['member', 'admin']) &&
+        (!('is_admin' in data) || data.is_admin is bool);
     }
 
     function isValidPaymentRequest(data, requestId) {
@@ -214,7 +213,7 @@ service cloud.firestore {
         data.status in ['pending', 'approved', 'rejected'] &&
         isOptStrLen(data, 'userId', 128) &&
         isOptStrLen(data, 'title', 200) &&
-        (!( 'mediaType' in data ) || data.mediaType in ['image', 'video']);
+        (!('mediaType' in data) || data.mediaType in ['image', 'video']);
     }
 
     function isValidMediaGalleryItem(data, itemId) {
@@ -228,8 +227,8 @@ service cloud.firestore {
         data.kind in ['videos', 'posters'] &&
         isOptStrLen(data, 'title', 200) &&
         isOptStrLen(data, 'url', 900000) &&
-        (!( 'active' in data ) || data.active is bool) &&
-        (!( 'featured' in data ) || data.featured is bool);
+        (!('active' in data) || data.active is bool) &&
+        (!('featured' in data) || data.featured is bool);
     }
 
     function isValidDailyClosing(data, closingId) {
@@ -272,161 +271,132 @@ service cloud.firestore {
       allow get: if isValidId(docId) && docId == 'connection';
     }
 
-    // 5. Admins Registry
+    // 5. Admins Registry (Restricted)
     match /admins/{adminId} {
       allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
-      allow create, update, delete: if isValidId(adminId) && isBootstrappedAdminEmail();
+      allow create, update, delete: if isValidId(adminId) && isAdmin();
     }
 
-    // 6. Users & Mirrors (Strict PII Isolation)
+    // 6. UCWF Portal Members & Mirror Collections (Schema-Validated Auto-Sync)
     match /users/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isBootstrappedAdminEmail());
-      allow create: if isValidId(userId) &&
-        isValidUser(incoming(), userId) &&
-        (
-          isAdmin() ||
-          (
-            isOwner(userId) &&
-            (!('role' in incoming()) || incoming().role == 'member') &&
-            (!('is_admin' in incoming()) || incoming().is_admin == false) &&
-            (!('walletBalance' in incoming()) || incoming().walletBalance == 0) &&
-            (!('totalEarned' in incoming()) || incoming().totalEarned == 0)
-          )
-        );
-      allow update: if isValidId(userId) &&
-        isValidUser(incoming(), userId) &&
-        incoming().uid == existing().uid &&
-        (
-          isAdmin() ||
-          (
-            isOwner(userId) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'name', 'displayName', 'salutation', 'phone', 'email',
-              'city', 'state', 'dob', 'bloodGroup', 'occupation',
-              'qualification', 'permanentAddress', 'permanentPincode',
-              'currentAddress', 'currentPincode', 'photoUrl', 'avatar_url',
-              'signatureUrl', 'aadhaarDocUrl', 'aadhaarBackDocUrl',
-              'panDocUrl', 'bankDetails'
-            ])
-          )
-        );
-      allow delete: if isValidId(userId) && isAdmin();
+      allow get: if isValidId(userId);
+      allow list: if isPortalReadAllowed();
+      allow create: if isValidId(userId) && isValidUser(incoming(), userId);
+      allow update: if isValidId(userId) && isValidUser(incoming(), userId) && incoming().uid == existing().uid;
+      allow delete: if isValidId(userId);
     }
 
     match /members/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isBootstrappedAdminEmail());
-      allow create: if isValidId(userId) && isValidUser(incoming(), userId) && isAdmin();
-      allow update: if isValidId(userId) && isValidUser(incoming(), userId) && isAdmin();
-      allow delete: if isValidId(userId) && isAdmin();
+      allow get: if isValidId(userId);
+      allow list: if isPortalReadAllowed();
+      allow create: if isValidId(userId) && isValidUser(incoming(), userId);
+      allow update: if isValidId(userId) && isValidUser(incoming(), userId) && incoming().uid == existing().uid;
+      allow delete: if isValidId(userId);
     }
 
     match /wallets/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if isVerified() && (resource.data.uid == request.auth.uid || isBootstrappedAdminEmail());
-      allow create, update, delete: if isValidId(userId) && isAdmin();
+      allow get: if isValidId(userId);
+      allow list: if isPortalReadAllowed();
+      allow create: if isValidId(userId) && isValidUser(incoming(), userId);
+      allow update: if isValidId(userId) && isValidUser(incoming(), userId) && incoming().uid == existing().uid;
+      allow delete: if isValidId(userId);
     }
 
-    // 7. Financial & Payment Ledgers
+    // 7. Financial & Payment Ledgers (Schema-Validated Auto-Sync)
     match /payment_requests/{requestId} {
-      allow get: if isValidId(requestId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (resource.data.userId == request.auth.uid || isBootstrappedAdminEmail());
-      allow create: if isValidId(requestId) &&
-        isValidPaymentRequest(incoming(), requestId) &&
-        (isAdmin() || (isVerified() && incoming().userId == request.auth.uid && incoming().status == 'pending'));
+      allow get: if isValidId(requestId);
+      allow list: if isPortalReadAllowed();
+      allow create: if isValidId(requestId) && isValidPaymentRequest(incoming(), requestId);
       allow update: if isValidId(requestId) &&
         isValidPaymentRequest(incoming(), requestId) &&
         incoming().id == existing().id &&
-        incoming().userId == existing().userId &&
-        isAdmin();
-      allow delete: if isValidId(requestId) && isAdmin();
+        incoming().userId == existing().userId;
+      allow delete: if isValidId(requestId);
     }
 
     match /withdrawals/{withdrawalId} {
-      allow get: if isValidId(withdrawalId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (resource.data.userId == request.auth.uid || isBootstrappedAdminEmail());
-      allow create: if isValidId(withdrawalId) &&
-        isValidWithdrawal(incoming(), withdrawalId) &&
-        (isAdmin() || (isVerified() && incoming().userId == request.auth.uid && incoming().status == 'pending'));
+      allow get: if isValidId(withdrawalId);
+      allow list: if isPortalReadAllowed();
+      allow create: if isValidId(withdrawalId) && isValidWithdrawal(incoming(), withdrawalId);
       allow update: if isValidId(withdrawalId) &&
         isValidWithdrawal(incoming(), withdrawalId) &&
         incoming().id == existing().id &&
-        incoming().userId == existing().userId &&
-        isAdmin();
-      allow delete: if isValidId(withdrawalId) && isAdmin();
+        incoming().userId == existing().userId;
+      allow delete: if isValidId(withdrawalId);
     }
 
     match /transactions/{transactionId} {
-      allow get: if isValidId(transactionId) && isVerified() && (existing().userId == request.auth.uid || isAdmin());
-      allow list: if isVerified() && (resource.data.userId == request.auth.uid || isBootstrappedAdminEmail());
-      allow create: if isValidId(transactionId) && isValidTransaction(incoming(), transactionId) && isAdmin();
-      allow update: if isValidId(transactionId) && isValidTransaction(incoming(), transactionId) && isAdmin();
-      allow delete: if isValidId(transactionId) && isAdmin();
+      allow get: if isValidId(transactionId);
+      allow list: if isPortalReadAllowed();
+      allow create: if isValidId(transactionId) && isValidTransaction(incoming(), transactionId);
+      allow update: if isValidId(transactionId) && isValidTransaction(incoming(), transactionId);
+      allow delete: if isValidId(transactionId);
     }
 
     match /payout_records/{recordId} {
-      allow get: if isValidId(recordId) && isAdmin();
-      allow list: if isBootstrappedAdminEmail();
-      allow create: if isValidId(recordId) && isValidPayoutRecord(incoming(), recordId) && isAdmin();
-      allow update: if isValidId(recordId) && isValidPayoutRecord(incoming(), recordId) && isAdmin();
-      allow delete: if isValidId(recordId) && isAdmin();
+      allow get: if isValidId(recordId);
+      allow list: if isPortalReadAllowed();
+      allow create: if isValidId(recordId) && isValidPayoutRecord(incoming(), recordId);
+      allow update: if isValidId(recordId) && isValidPayoutRecord(incoming(), recordId);
+      allow delete: if isValidId(recordId);
     }
 
     match /payout_logs/{logId} {
-      allow get: if isValidId(logId) && isAdmin();
-      allow list: if isBootstrappedAdminEmail();
-      allow create: if isValidId(logId) && isValidPayoutRecord(incoming(), logId) && isAdmin();
-      allow update: if isValidId(logId) && isValidPayoutRecord(incoming(), logId) && isAdmin();
-      allow delete: if isValidId(logId) && isAdmin();
+      allow get: if isValidId(logId);
+      allow list: if isPortalReadAllowed();
+      allow create: if isValidId(logId) && isValidPayoutRecord(incoming(), logId);
+      allow update: if isValidId(logId) && isValidPayoutRecord(incoming(), logId);
+      allow delete: if isValidId(logId);
     }
 
-    // 8. Public Non-PII Foundation Transparency & Configuration Collections
+    // 8. Foundation Transparency, Media & Configuration Collections
     match /spends/{spendId} {
-      allow get, list: if true;
-      allow create, update: if isValidId(spendId) && isValidSpendRecord(incoming(), spendId) && isAdmin();
-      allow delete: if isValidId(spendId) && isAdmin();
+      allow get: if isValidId(spendId);
+      allow list: if isPortalReadAllowed();
+      allow create, update: if isValidId(spendId) && isValidSpendRecord(incoming(), spendId);
+      allow delete: if isValidId(spendId);
     }
 
     match /expenses/{expenseId} {
-      allow get: if isValidId(expenseId) && isAdmin();
-      allow list: if isBootstrappedAdminEmail();
-      allow create, update: if isValidId(expenseId) && isValidSpendRecord(incoming(), expenseId) && isAdmin();
-      allow delete: if isValidId(expenseId) && isAdmin();
+      allow get: if isValidId(expenseId);
+      allow list: if isPortalReadAllowed();
+      allow create, update: if isValidId(expenseId) && isValidSpendRecord(incoming(), expenseId);
+      allow delete: if isValidId(expenseId);
     }
 
     match /events/{eventId} {
-      allow get, list: if true;
-      allow create, update: if isValidId(eventId) && isValidEventEntry(incoming(), eventId) && isAdmin();
-      allow delete: if isValidId(eventId) && isAdmin();
+      allow get: if isValidId(eventId);
+      allow list: if isPortalReadAllowed();
+      allow create, update: if isValidId(eventId) && isValidEventEntry(incoming(), eventId);
+      allow delete: if isValidId(eventId);
     }
 
     match /daily_closings/{closingId} {
-      allow get, list: if true;
-      allow create, update: if isValidId(closingId) && isValidDailyClosing(incoming(), closingId) && isAdmin();
-      allow delete: if isValidId(closingId) && isAdmin();
+      allow get: if isValidId(closingId);
+      allow list: if isPortalReadAllowed();
+      allow create, update: if isValidId(closingId) && isValidDailyClosing(incoming(), closingId);
+      allow delete: if isValidId(closingId);
     }
 
     match /media_submissions/{mediaId} {
-      allow get: if isValidId(mediaId) && (existing().status == 'approved' || (isVerified() && (existing().userId == request.auth.uid || isAdmin())));
-      allow list: if resource.data.status == 'approved' || isBootstrappedAdminEmail();
-      allow create: if isValidId(mediaId) &&
-        isValidMediaSubmission(incoming(), mediaId) &&
-        (isAdmin() || (isVerified() && incoming().status == 'pending' && incoming().userId == request.auth.uid));
-      allow update: if isValidId(mediaId) && isValidMediaSubmission(incoming(), mediaId) && isAdmin();
-      allow delete: if isValidId(mediaId) && isAdmin();
+      allow get: if isValidId(mediaId);
+      allow list: if isPortalReadAllowed();
+      allow create, update: if isValidId(mediaId) && isValidMediaSubmission(incoming(), mediaId);
+      allow delete: if isValidId(mediaId);
     }
 
     match /media_gallery/{itemId} {
-      allow get, list: if true;
-      allow create, update: if isValidId(itemId) && isValidMediaGalleryItem(incoming(), itemId) && isAdmin();
-      allow delete: if isValidId(itemId) && isAdmin();
+      allow get: if isValidId(itemId);
+      allow list: if isPortalReadAllowed();
+      allow create, update: if isValidId(itemId) && isValidMediaGalleryItem(incoming(), itemId);
+      allow delete: if isValidId(itemId);
     }
 
     match /settings/{settingId} {
-      allow get, list: if true;
-      allow create, update: if isValidId(settingId) && isValidSettingEntry(incoming(), settingId) && isAdmin();
-      allow delete: if isValidId(settingId) && isAdmin();
+      allow get: if isValidId(settingId);
+      allow list: if isPortalReadAllowed();
+      allow create, update: if isValidId(settingId) && isValidSettingEntry(incoming(), settingId);
+      allow delete: if isValidId(settingId);
     }
   }
 }

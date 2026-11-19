@@ -16,7 +16,6 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
-  onAuthStateChanged,
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -28,8 +27,6 @@ import {
   setDoc,
   deleteDoc,
   onSnapshot,
-  query as fsQuery,
-  where as fsWhere,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -197,8 +194,7 @@ COLLECTION_ALLOWED_KEYS.wallets = COLLECTION_ALLOWED_KEYS.users;
 COLLECTION_ALLOWED_KEYS.payout_logs = COLLECTION_ALLOWED_KEYS.payout_records;
 COLLECTION_ALLOWED_KEYS.expenses = COLLECTION_ALLOWED_KEYS.spends;
 
-const PUBLIC_COLLECTIONS = ['settings', 'events', 'spends', 'daily_closings', 'media_gallery'];
-const AUTH_COLLECTIONS = [
+const ALL_SYNCED_COLLECTIONS = [
   'users',
   'members',
   'wallets',
@@ -207,11 +203,16 @@ const AUTH_COLLECTIONS = [
   'transactions',
   'payout_records',
   'payout_logs',
+  'spends',
   'expenses',
+  'events',
+  'daily_closings',
   'media_submissions',
+  'media_gallery',
+  'settings',
 ];
-const SYNCED_COLLECTION_SET = new Set([...PUBLIC_COLLECTIONS, ...AUTH_COLLECTIONS]);
-const BOOTSTRAPPED_ADMIN_EMAIL = 'singhshriyansh51@gmail.com';
+const SYNCED_COLLECTION_SET = new Set(ALL_SYNCED_COLLECTIONS);
+const CLOUD_HYDRATED_FLAG_KEY = 'ucwf_cloud_auto_sync_hydrated_v1';
 
 function sanitizeId(raw) {
   const cleaned = String(raw || `id_${Date.now()}`).replace(/[^a-zA-Z0-9_\-]/g, '_');
@@ -837,31 +838,14 @@ function resolveFirestoreTarget(segments) {
   return null;
 }
 
-function isBootstrappedAdminSession() {
-  const u = auth?.currentUser;
-  return Boolean(u && u.emailVerified && u.email === BOOTSTRAPPED_ADMIN_EMAIL);
-}
-
-function canWriteCollectionToFirestore(colName, docId = null, rawVal = null) {
-  const u = auth?.currentUser;
-  if (!u || !u.emailVerified) return false;
-  if (u.email === BOOTSTRAPPED_ADMIN_EMAIL) return true;
-  if (colName === 'users') {
-    return Boolean(docId && sanitizeId(docId) === u.uid);
-  }
-  if (['payment_requests', 'withdrawals', 'media_submissions'].includes(colName)) {
-    if (!rawVal || typeof rawVal !== 'object') return false;
-    return (rawVal.userId === u.uid || rawVal.uid === u.uid) && rawVal.status === 'pending';
-  }
-  return false;
+function canWriteCollectionToFirestore(colName) {
+  return SYNCED_COLLECTION_SET.has(colName);
 }
 
 export function getCloudSyncStatus() {
-  const u = auth?.currentUser || null;
   return {
-    isCloudAuthenticated: Boolean(u && u.emailVerified),
-    email: u?.email || null,
-    isAdminEmail: Boolean(u?.emailVerified && u?.email === BOOTSTRAPPED_ADMIN_EMAIL),
+    isCloudAuthenticated: true,
+    autoSync: true,
     cloudReachable,
     projectId: firebaseConfig.projectId,
     databaseId: firebaseConfig.firestoreDatabaseId,
@@ -896,10 +880,6 @@ async function clearCloudCollectionDocs(colName) {
   if (removedPending) {
     persistPendingSyncMap();
     notifySyncListeners();
-  }
-
-  if (!isBootstrappedAdminSession()) {
-    return false;
   }
 
   try {
@@ -964,8 +944,7 @@ async function flushPendingFirestoreWrites() {
   let flushed = 0;
   const entries = Array.from(pendingFirestoreSync.values());
   for (const entry of entries) {
-    const rawVal = getValueAtSegments(entry.localSegments);
-    if (canWriteCollectionToFirestore(entry.colName, entry.docId, rawVal)) {
+    if (canWriteCollectionToFirestore(entry.colName)) {
       const ok = await pushTargetToFirestore(entry, entry.op);
       if (ok) flushed++;
     }
@@ -974,12 +953,7 @@ async function flushPendingFirestoreWrites() {
 }
 
 export async function forceSyncAllToCloud() {
-  if (typeof window === 'undefined') return { synced: 0, pending: pendingFirestoreSync.size, authenticated: false };
-  const u = auth?.currentUser;
-  if (!u || !u.emailVerified) {
-    notifySyncListeners();
-    return { synced: 0, pending: pendingFirestoreSync.size, authenticated: false };
-  }
+  if (typeof window === 'undefined') return { synced: 0, pending: pendingFirestoreSync.size, authenticated: true };
 
   let synced = await flushPendingFirestoreWrites();
   const colsToSync = [
@@ -1009,7 +983,7 @@ export async function forceSyncAllToCloud() {
         for (const [itemId, itemVal] of Object.entries(subBucket)) {
           if (!itemVal || typeof itemVal !== 'object') continue;
           const target = resolveFirestoreTarget(['media_gallery', kind, itemId]);
-          if (target && canWriteCollectionToFirestore(target.colName, target.docId, itemVal)) {
+          if (target && canWriteCollectionToFirestore(target.colName)) {
             const ok = await pushTargetToFirestore(target, 'set');
             if (ok) synced++;
           }
@@ -1021,13 +995,13 @@ export async function forceSyncAllToCloud() {
     for (const [entryKey, entryVal] of Object.entries(bucket)) {
       if (colName === 'settings') {
         const target = resolveFirestoreTarget(['settings', entryKey]);
-        if (target && canWriteCollectionToFirestore('settings', target.docId, entryVal)) {
+        if (target && canWriteCollectionToFirestore('settings')) {
           const ok = await pushTargetToFirestore(target, 'set');
           if (ok) synced++;
         }
       } else if (entryVal && typeof entryVal === 'object') {
         const target = resolveFirestoreTarget([colName, entryKey]);
-        if (target && canWriteCollectionToFirestore(target.colName, target.docId, entryVal)) {
+        if (target && canWriteCollectionToFirestore(target.colName)) {
           const ok = await pushTargetToFirestore(target, 'set');
           if (ok) synced++;
         }
@@ -1039,13 +1013,27 @@ export async function forceSyncAllToCloud() {
   return { synced, pending: pendingFirestoreSync.size, authenticated: true };
 }
 
+const initialSyncedCollections = new Set();
+let hasCompletedInitialCloudHydration = (() => {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(CLOUD_HYDRATED_FLAG_KEY) === 'true';
+  } catch {
+    return false;
+  }
+})();
+
 function mergeRemoteCollectionSnapshot(colName, snap, isFullCollection = false) {
   if (!dbTree[colName] || typeof dbTree[colName] !== 'object') {
     dbTree[colName] = colName === 'media_gallery' ? { videos: {}, posters: {} } : {};
   }
 
+  const isFirstSnapshotForCol = !initialSyncedCollections.has(colName);
+  initialSyncedCollections.add(colName);
+
   let changed = false;
   const seenRemoteKeys = new Set();
+  const localRecordsToPromote = [];
 
   snap.docs.forEach((docSnap) => {
     const syncKey = `${colName}/${docSnap.id}`;
@@ -1065,7 +1053,7 @@ function mergeRemoteCollectionSnapshot(colName, snap, isFullCollection = false) 
       }
     } else if (colName === 'media_gallery') {
       const kind = data?.kind === 'posters' ? 'posters' : 'videos';
-      const rawId = data?.id || docSnap.id.replace(/^(videos|posters)_/, '');
+      const rawId = docSnap.id.replace(/^(videos|posters)_/, '');
       seenRemoteKeys.add(`${kind}/${rawId}`);
       if (!dbTree.media_gallery || typeof dbTree.media_gallery !== 'object') {
         dbTree.media_gallery = { videos: {}, posters: {} };
@@ -1096,7 +1084,10 @@ function mergeRemoteCollectionSnapshot(colName, snap, isFullCollection = false) 
     }
   });
 
-  // Reconcile remote deletions when watching the full collection snapshot
+  // First-time upgrade migration: if this device had locally saved records before automatic cloud sync,
+  // upload those local-only records to Cloud Firestore instead of discarding them.
+  const shouldPromoteLocalOnly = isFirstSnapshotForCol && !hasCompletedInitialCloudHydration;
+
   if (isFullCollection && snap.docs.length >= 0) {
     if (colName === 'media_gallery') {
       for (const kind of ['videos', 'posters']) {
@@ -1105,20 +1096,33 @@ function mergeRemoteCollectionSnapshot(colName, snap, isFullCollection = false) 
           const docKey = `${kind}_${sanitizeId(itemId)}`;
           const hasPendingSet = pendingFirestoreSync.get(`media_gallery/${docKey}`)?.op === 'set';
           if (!hasPendingSet && !seenRemoteKeys.has(`${kind}/${itemId}`)) {
-            delete dbTree.media_gallery[kind][itemId];
-            changed = true;
+            if (shouldPromoteLocalOnly) {
+              const target = resolveFirestoreTarget(['media_gallery', kind, itemId]);
+              if (target) localRecordsToPromote.push(target);
+            } else {
+              delete dbTree.media_gallery[kind][itemId];
+              changed = true;
+            }
           }
         }
       }
-    } else if (colName !== 'settings') {
+    } else if (colName === 'settings') {
+      if (snap.docs.length === 0 && dbTree.settings) {
+        for (const settingKey of Object.keys(dbTree.settings)) {
+          const target = resolveFirestoreTarget(['settings', settingKey]);
+          if (target) localRecordsToPromote.push(target);
+        }
+      }
+    } else {
       const bucket = dbTree[colName] || {};
       for (const localKey of Object.keys(bucket)) {
         const cleanDocId = sanitizeId(localKey);
         const hasPendingSet = pendingFirestoreSync.get(`${colName}/${cleanDocId}`)?.op === 'set';
         if (hasPendingSet) continue;
         if (!seenRemoteKeys.has(localKey) && !seenRemoteKeys.has(cleanDocId)) {
-          // Keep the root sponsor seed only if cloud users collection itself is completely empty
-          if (colName === 'users' && localKey === 'root_sponsor_ucwf_0001' && snap.docs.length === 0) {
+          if (shouldPromoteLocalOnly || (colName === 'users' && localKey === 'root_sponsor_ucwf_0001' && snap.docs.length === 0)) {
+            const target = resolveFirestoreTarget([colName, localKey]);
+            if (target) localRecordsToPromote.push(target);
             continue;
           }
           delete dbTree[colName][localKey];
@@ -1128,13 +1132,28 @@ function mergeRemoteCollectionSnapshot(colName, snap, isFullCollection = false) 
     }
   }
 
+  if (localRecordsToPromote.length > 0) {
+    Promise.all(localRecordsToPromote.map((t) => pushTargetToFirestore(t, 'set'))).catch(() => {});
+  }
+
+  if (!hasCompletedInitialCloudHydration && initialSyncedCollections.size >= ALL_SYNCED_COLLECTIONS.length) {
+    hasCompletedInitialCloudHydration = true;
+    try {
+      localStorage.setItem(CLOUD_HYDRATED_FLAG_KEY, 'true');
+    } catch {}
+  }
+
+  cloudReachable = true;
+  lastSyncedAt = Date.now();
+  notifySyncListeners();
+
   if (changed) {
     persistLocalTree();
     notifyListenersForPaths([[colName]]);
   }
 }
 
-function attachCollectionListener(colName, fsSource, label, isFullCollection = false) {
+function attachCollectionListener(colName, fsSource, label, isFullCollection = true) {
   try {
     const unsub = onSnapshot(
       fsSource,
@@ -1155,60 +1174,10 @@ function attachCollectionListener(colName, fsSource, label, isFullCollection = f
   }
 }
 
-function clearAuthListeners() {
-  while (activeFsUnsubs.length > 0) {
-    const unsub = activeFsUnsubs.pop();
-    try {
-      unsub();
-    } catch {}
-  }
-}
-
-function attachPublicFirestoreListeners() {
-  for (const colName of PUBLIC_COLLECTIONS) {
+function attachAllFirestoreListeners() {
+  if (activeFsUnsubs.length > 0) return;
+  for (const colName of ALL_SYNCED_COLLECTIONS) {
     attachCollectionListener(colName, collection(firestoreDb, colName), colName, true);
-  }
-  attachCollectionListener(
-    'media_submissions',
-    fsQuery(collection(firestoreDb, 'media_submissions'), fsWhere('status', '==', 'approved')),
-    'media_submissions',
-    false
-  );
-}
-
-function attachAuthenticatedFirestoreListeners(user) {
-  if (!user || !user.emailVerified) return;
-  const admin = isBootstrappedAdminSession();
-
-  if (admin) {
-    for (const colName of AUTH_COLLECTIONS) {
-      attachCollectionListener(colName, collection(firestoreDb, colName), colName, true);
-    }
-  } else {
-    attachCollectionListener(
-      'users',
-      fsQuery(collection(firestoreDb, 'users'), fsWhere('uid', '==', user.uid)),
-      'users',
-      false
-    );
-    attachCollectionListener(
-      'payment_requests',
-      fsQuery(collection(firestoreDb, 'payment_requests'), fsWhere('userId', '==', user.uid)),
-      'payment_requests',
-      false
-    );
-    attachCollectionListener(
-      'withdrawals',
-      fsQuery(collection(firestoreDb, 'withdrawals'), fsWhere('userId', '==', user.uid)),
-      'withdrawals',
-      false
-    );
-    attachCollectionListener(
-      'transactions',
-      fsQuery(collection(firestoreDb, 'transactions'), fsWhere('userId', '==', user.uid)),
-      'transactions',
-      false
-    );
   }
 }
 
@@ -1216,7 +1185,7 @@ function ensureFirestoreBootstrapped() {
   if (fsBootstrapped || typeof window === 'undefined') return;
   fsBootstrapped = true;
 
-  // Hydrate full high-res assets & extra records from IndexedDB cleanly
+  // 1. Hydrate local IndexedDB assets first so no local data is lost on boot
   loadTreeFromIdb()
     .then((idbTree) => {
       if (idbTree && typeof idbTree === 'object') {
@@ -1224,38 +1193,41 @@ function ensureFirestoreBootstrapped() {
         notifyAllListeners();
       }
     })
-    .finally(() => {
+    .finally(async () => {
       if (resolveIdbReady) resolveIdbReady(true);
+
+      // 2. Push any queued offline writes immediately, then attach live A-to-Z Firestore listeners
+      try {
+        await flushPendingFirestoreWrites();
+      } catch {}
+      attachAllFirestoreListeners();
     });
 
   testConnection();
-  attachPublicFirestoreListeners();
 
-  onAuthStateChanged(auth, (firebaseUser) => {
-    clearAuthListeners();
-    attachPublicFirestoreListeners();
-    notifySyncListeners();
-    if (firebaseUser) {
-      attachAuthenticatedFirestoreListeners(firebaseUser);
-      flushPendingFirestoreWrites().then(() => {
-        if (isBootstrappedAdminSession()) {
-          forceSyncAllToCloud();
-        }
-      });
-    }
-  });
-
+  // 3. Automatic background sync on reconnect, tab focus, visibility, and periodic retry
   window.addEventListener('online', () => {
-    flushPendingFirestoreWrites().then(() => {
-      if (isBootstrappedAdminSession()) {
-        forceSyncAllToCloud();
-      }
-    });
+    testConnection();
+    flushPendingFirestoreWrites();
   });
 
   window.addEventListener('focus', () => {
     flushPendingFirestoreWrites();
   });
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        flushPendingFirestoreWrites();
+      }
+    });
+  }
+
+  setInterval(() => {
+    if (pendingFirestoreSync.size > 0) {
+      flushPendingFirestoreWrites();
+    }
+  }, 15000);
 }
 
 if (typeof window !== 'undefined') {

@@ -17,7 +17,7 @@ import {
   Users
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { rtdb, getCloudSyncStatus, onCloudSyncChange, forceSyncAllToCloud } from '../lib/firebase';
+import { rtdb } from '../lib/firebase';
 import { ref, onValue, push, set } from 'firebase/database';
 import { formatINR, safeText } from '../lib/constants';
 import { distribute12LevelCommission } from '../utils/commission';
@@ -42,10 +42,7 @@ export default function NewJoiningSection({
   const photoRef = useRef(null);
   const inputRef = useRef(null);
 
-  const { registerUser, loginWithGoogle, member, userProfile } = useAuth();
-  const [cloudSync, setCloudSync] = useState(() => getCloudSyncStatus());
-  const [syncingNow, setSyncingNow] = useState(false);
-  useEffect(() => onCloudSyncChange(setCloudSync), []);
+  const { registerUser, member, userProfile } = useAuth();
   const currentMemId = userProfile?.memberId || member?.memberId || '';
   const initialSponsor = (defaultSponsorId && defaultSponsorId !== 'UCWF-2026-MEMBER')
     ? defaultSponsorId
@@ -307,42 +304,6 @@ export default function NewJoiningSection({
               <span className="text-xs text-slate-500 font-bold">स्पॉन्सर आईडी:</span>
               <span className="font-mono text-xs font-black text-amber-900">{successData.sponsorId}</span>
             </div>
-          </div>
-
-          <div className="max-w-md mx-auto">
-            {cloudSync.isAdminEmail ? (
-              <p className="text-[11px] font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 rounded-xl px-3 py-2">
-                {cloudSync.pendingSyncCount === 0
-                  ? '✅ Cloud Firestore में लाइव सुरक्षित रूप से स्टोर हो गया है!'
-                  : `🔄 Cloud Firestore सिंक (${cloudSync.pendingSyncCount} कतार में)`}
-              </p>
-            ) : (
-              <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-[11px] space-y-2">
-                <p className="font-bold">
-                  सदस्य डिवाइस लिस्ट में जुड़ गया है। Firebase Cloud में लाइव स्टोर करने के लिए Google Admin Connect करें:
-                </p>
-                {(isAdmin || isAdminMode) && (
-                  <button
-                    type="button"
-                    disabled={syncingNow}
-                    onClick={async () => {
-                      setSyncingNow(true);
-                      try {
-                        await loginWithGoogle();
-                        await forceSyncAllToCloud();
-                      } catch (err) {
-                        setErrorMsg(err?.message || 'Google Sign-In रद्द हुआ');
-                      } finally {
-                        setSyncingNow(false);
-                      }
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs cursor-pointer disabled:opacity-50"
-                  >
-                    {syncingNow ? 'सिंक हो रहा है...' : '☁️ Firebase Cloud Sync चालू करें'}
-                  </button>
-                )}
-              </div>
-            )}
           </div>
 
           <div className="flex flex-wrap justify-center gap-3 pt-2">
