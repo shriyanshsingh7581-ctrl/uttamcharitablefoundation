@@ -28,18 +28,18 @@ import {
   FileText
 } from 'lucide-react';
 import { rtdb } from '../lib/firebase';
-import { ref, get, onValue } from 'firebase/database';
+import { ref, onValue } from 'firebase/database';
 import { 
-  calculateMemberTreeMetrics, 
-  getSavedLevelRates, 
-  getSavedSelfBusinessRate 
+  normalizeLevelRates
 } from '../utils/commission';
 import { 
   isSponsoredBy,
   getMemberFullName,
   computeUnlimitedGenerationTree,
   buildMember12LevelReport,
-  findParentMember
+  findParentMember,
+  parseAnyDateToEpochMs,
+  DEFAULT_LEVEL_RATES
 } from '../utils/mlmUtils';
 import { 
   FOUNDATION_DETAILS, 
@@ -106,31 +106,53 @@ export default function MemberReportLookup({
   const photoRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Load database snapshot and rates on mount
+  // Live database subscriptions for instant updates when members are added or modified
   useEffect(() => {
-    let isMounted = true;
-    async function loadData() {
-      try {
-        const [usersSnap, rates, selfRate] = await Promise.all([
-          get(ref(rtdb, 'users')),
-          getSavedLevelRates(),
-          getSavedSelfBusinessRate()
-        ]);
-        if (isMounted) {
-          if (usersSnap.exists()) {
-            setAllUsers(usersSnap.val());
-          }
-          setLevelRates(rates || {});
-          setSelfBusinessRate(selfRate || 0);
-          setDbLoaded(true);
-        }
-      } catch (err) {
-        console.error('Error loading lookup database:', err);
+    const unsubUsers = onValue(
+      ref(rtdb, 'users'),
+      (snap) => {
+        setAllUsers(snap.exists() ? snap.val() : {});
+        setDbLoaded(true);
+      },
+      (err) => {
+        console.error('Error loading lookup users:', err);
+        setDbLoaded(true);
       }
-    }
-    loadData();
-    return () => { isMounted = false; };
+    );
+
+    const unsubRates = onValue(
+      ref(rtdb, 'settings/levelRates'),
+      (snap) => {
+        setLevelRates(normalizeLevelRates(snap.exists() ? snap.val() : DEFAULT_LEVEL_RATES));
+      },
+      () => {
+        setLevelRates({ ...DEFAULT_LEVEL_RATES });
+      }
+    );
+
+    setSelfBusinessRate(0);
+
+    return () => {
+      unsubUsers();
+      unsubRates();
+    };
   }, []);
+
+  // Recompute currently open member report automatically whenever live database changes
+  useEffect(() => {
+    if (!selectedMember) return;
+    const latestMember = allUsers[selectedMember.uid]
+      ? { uid: selectedMember.uid, ...allUsers[selectedMember.uid] }
+      : selectedMember;
+    const report = buildMember12LevelReport(latestMember, allUsers, levelRates);
+    const generationData = computeUnlimitedGenerationTree(latestMember, allUsers, levelRates, 0);
+    setSelectedMember(latestMember);
+    setReportMetrics({
+      ...report,
+      generationTree: generationData.tree,
+      fullDownlineList: generationData.allDownlineList,
+    });
+  }, [allUsers, levelRates]);
 
   // Update searchId if prefillMemberId changes
   useEffect(() => {
@@ -498,8 +520,14 @@ export default function MemberReportLookup({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 bg-white">
-                {Object.values(allUsers)
-                  .sort((a, b) => (b.createdAt || b.timestamp || 0) - (a.createdAt || a.timestamp || 0))
+                {Object.entries(allUsers)
+                  .map(([uidKey, uVal]) => (uVal ? { uid: uidKey, ...uVal } : null))
+                  .filter(Boolean)
+                  .sort((a, b) => {
+                    const tA = Number(a.timestamp || 0) || parseAnyDateToEpochMs(a.joiningDate || a.createdAt || a.applicationDate);
+                    const tB = Number(b.timestamp || 0) || parseAnyDateToEpochMs(b.joiningDate || b.createdAt || b.applicationDate);
+                    return tB - tA;
+                  })
                   .map((m, idx) => {
                     const spObj = findParentMember(m, allUsers);
                     const spIdDisplay = spObj?.memberId || m.sponsorId || 'DIRECT';

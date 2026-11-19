@@ -14,9 +14,18 @@ import {
   update,
   onValue,
   off,
+  forceSyncAllToCloud,
 } from '../lib/firebase';
 import { safeText } from '../lib/constants';
-import { generateUniqueMemberId, normId } from '../utils/mlmUtils';
+import {
+  generateUniqueMemberId,
+  normId,
+  normalizeSponsorId,
+  findParentMember,
+  getMemberFullName,
+} from '../utils/mlmUtils';
+
+const BOOTSTRAPPED_ADMIN_EMAIL = 'singhshriyansh51@gmail.com';
 
 const AuthContext = createContext(null);
 
@@ -178,11 +187,13 @@ export const AuthProvider = ({ children }) => {
                 setUser(firebaseUser);
                 setMember({ ...data, uid });
 
+                const gEmail = (firebaseUser.email || '').trim().toLowerCase();
                 if (
                   data.is_admin === true ||
                   data.role === 'admin' ||
-                  firebaseUser.email === 'admin@ucwf.online' ||
-                  firebaseUser.email === 'admin@uttam.org' ||
+                  gEmail === BOOTSTRAPPED_ADMIN_EMAIL ||
+                  gEmail === 'admin@ucwf.online' ||
+                  gEmail === 'admin@uttam.org' ||
                   localStorage.getItem('ucwf_admin_session') === 'true'
                 ) {
                   setIsAdmin(true);
@@ -193,7 +204,15 @@ export const AuthProvider = ({ children }) => {
               } else {
                 setUser(firebaseUser);
                 setMember(null);
-                applyStoredAdminFallback();
+                const gEmail = (firebaseUser.email || '').trim().toLowerCase();
+                if (gEmail === BOOTSTRAPPED_ADMIN_EMAIL) {
+                  setIsAdmin(true);
+                  try {
+                    localStorage.setItem('ucwf_admin_session', 'true');
+                  } catch {}
+                } else {
+                  applyStoredAdminFallback();
+                }
               }
               setLoading(false);
             },
@@ -295,7 +314,9 @@ export const AuthProvider = ({ children }) => {
     }
 
     const resolvedPackageAmt = Number(data.packageAmount || data.packageTier || data.selfBusiness || 500);
-    const resolvedSponsorId = data.sponsorId ? String(data.sponsorId).trim().toUpperCase() : 'DIRECT';
+    const rawSponsor = data.sponsorId ? String(data.sponsorId).trim().toUpperCase() : 'DIRECT';
+    const matchedSponsorObj = findParentMember({ sponsorId: rawSponsor }, allUsers);
+    const resolvedSponsorId = normalizeSponsorId(rawSponsor, allUsers) || rawSponsor || 'DIRECT';
 
     const newMemberData = {
       ...data,
@@ -324,6 +345,8 @@ export const AuthProvider = ({ children }) => {
       qualification: data.qualification || '',
       gender: data.gender || 'पुरुष',
       sponsorId: resolvedSponsorId,
+      sponsorUid: data.sponsorUid || matchedSponsorObj?.uid || '',
+      sponsorName: data.sponsorName || (matchedSponsorObj ? getMemberFullName(matchedSponsorObj) : (resolvedSponsorId === 'DIRECT' ? 'उत्तम चैरिटेबल ट्रस्ट' : '')),
       packageTier: resolvedPackageAmt,
       packageAmount: resolvedPackageAmt,
       packageName: data.packageName || `सहयोग संकल्प (₹${resolvedPackageAmt})`,
@@ -578,6 +601,9 @@ export const AuthProvider = ({ children }) => {
     const googleUser = result.user;
     const uid = googleUser.uid;
 
+    const googleEmail = (googleUser.email || '').trim().toLowerCase();
+    const isGoogleAdmin = googleEmail === BOOTSTRAPPED_ADMIN_EMAIL || googleEmail === 'admin@ucwf.online';
+
     const userRef = ref(db, `users/${uid}`);
     const snap = await get(userRef);
 
@@ -588,16 +614,16 @@ export const AuthProvider = ({ children }) => {
         const allSnap = await get(ref(db, 'users'));
         if (allSnap.exists()) allUsers = allSnap.val() || {};
       } catch {}
-      const memberId = generateUniqueMemberId(allUsers);
+      const memberId = isGoogleAdmin ? 'UCWF-0001' : generateUniqueMemberId(allUsers);
       const createdAt = getReadableDate();
 
       const newGoogleMember = {
         uid: uid,
         memberId: memberId,
         salutation: 'श्री',
-        name: googleUser.displayName || 'Foundation Member',
+        name: googleUser.displayName || (isGoogleAdmin ? 'Super Admin' : 'Foundation Member'),
         fatherOrSpouseName: '',
-        email: (googleUser.email || '').toLowerCase(),
+        email: googleEmail,
         password: defaultPassword,
         plainPassword: defaultPassword,
         phone: googleUser.phoneNumber || '',
@@ -606,6 +632,8 @@ export const AuthProvider = ({ children }) => {
         sponsorId: 'DIRECT',
         packageTier: 0,
         status: 'active',
+        isApproved: true,
+        ...(isGoogleAdmin ? { role: 'admin', is_admin: true } : {}),
         walletBalance: 0,
         totalEarned: 0,
         totalWithdrawn: 0,
@@ -639,6 +667,16 @@ export const AuthProvider = ({ children }) => {
           'ucwf_member_session',
           JSON.stringify({ uid: uid, memberId: data.memberId, phone: data.phone || '' })
         );
+      } catch {}
+    }
+
+    if (isGoogleAdmin) {
+      setIsAdmin(true);
+      try {
+        localStorage.setItem('ucwf_admin_session', 'true');
+      } catch {}
+      try {
+        await forceSyncAllToCloud();
       } catch {}
     }
 

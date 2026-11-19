@@ -71,42 +71,46 @@ export default function PaidExpenseSection({ isAdmin = false }) {
     return () => unsub();
   }, []);
 
-  // 2. Fetch Total Collections & Total Paid Payout
+  // 2. Listen live to Total Collections & Total Paid Payout
   useEffect(() => {
-    async function loadFinancials() {
-      try {
-        const [usersSnap, payoutsSnap] = await Promise.all([
-          get(ref(rtdb, 'users')),
-          get(ref(rtdb, 'payout_logs'))
-        ]);
+    let latestUsers = {};
+    let latestLogs = {};
 
-        let colSum = 0;
-        let paidPayoutSum = 0;
+    const recompute = () => {
+      let colSum = 0;
+      let paidPayoutSum = 0;
 
-        if (usersSnap.exists()) {
-          const users = usersSnap.val();
-          Object.values(users).forEach(u => {
-            colSum += parseAmount(u);
-            paidPayoutSum += Number(u.commissionPaid || u.paidPayout || 0);
-          });
-        }
+      Object.values(latestUsers || {}).forEach((u) => {
+        if (!u) return;
+        colSum += parseAmount(u);
+        paidPayoutSum += Number(u.commissionPaid || u.paidPayout || 0);
+      });
 
-        if (payoutsSnap.exists()) {
-          const pLogs = payoutsSnap.val();
-          let logSum = 0;
-          Object.values(pLogs).forEach(l => {
-            logSum += Number(l.amount || 0);
-          });
-          if (logSum > paidPayoutSum) paidPayoutSum = logSum;
-        }
+      let logSum = 0;
+      Object.values(latestLogs || {}).forEach((l) => {
+        if (!l) return;
+        logSum += Number(l.amount || 0);
+      });
+      if (logSum > paidPayoutSum) paidPayoutSum = logSum;
 
-        setTotalCollection(colSum);
-        setTotalPaidPayout(paidPayoutSum);
-      } catch (err) {
-        console.error('Error loading expense financials:', err);
-      }
-    }
-    loadFinancials();
+      setTotalCollection(colSum);
+      setTotalPaidPayout(paidPayoutSum);
+    };
+
+    const unsubUsers = onValue(ref(rtdb, 'users'), (snap) => {
+      latestUsers = snap.exists() ? snap.val() : {};
+      recompute();
+    });
+
+    const unsubLogs = onValue(ref(rtdb, 'payout_logs'), (snap) => {
+      latestLogs = snap.exists() ? snap.val() : {};
+      recompute();
+    });
+
+    return () => {
+      unsubUsers();
+      unsubLogs();
+    };
   }, []);
 
   const totalExpense = useMemo(() => {

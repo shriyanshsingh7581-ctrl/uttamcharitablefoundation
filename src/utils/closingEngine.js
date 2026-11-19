@@ -1,4 +1,5 @@
 import { rtdb, ref, get, update } from '../lib/firebase';
+import { whenAdapterReady } from '../lib/rtdbFirestoreAdapter';
 import {
   DEFAULT_LEVEL_RATES,
   round2,
@@ -85,6 +86,7 @@ export async function runDailyClosing(targetDateStr = null) {
   const closingDate = targetDateStr || getISTDateString();
 
   try {
+    await whenAdapterReady();
     const [usersSnap, ratesSnap] = await Promise.all([
       get(ref(rtdb, 'users')),
       get(ref(rtdb, 'settings/levelRates'))
@@ -101,6 +103,9 @@ export async function runDailyClosing(targetDateStr = null) {
     );
 
     const updates = {};
+    const setIfChanged = (path, val, prev) => {
+      if (prev !== val) updates[path] = val;
+    };
     const memberStatements = {};
 
     let globalSelfBusiness = 0;
@@ -147,26 +152,26 @@ export async function runDailyClosing(targetDateStr = null) {
           ? 'Pending'
           : 'Settled';
 
-      // Sync member's live fields in /users/{uid}
-      updates[`/users/${uid}/selfBusiness`] = selfBiz;
-      updates[`/users/${uid}/directCount`] = directCount;
-      updates[`/users/${uid}/directMembersCount`] = directCount;
-      updates[`/users/${uid}/directBusiness`] = directBiz;
-      updates[`/users/${uid}/directTeamBusiness`] = directBiz;
-      updates[`/users/${uid}/downlineMembersCount`] = report.downlineMembersCount;
-      updates[`/users/${uid}/downlineBusiness`] = downlineBiz;
-      updates[`/users/${uid}/teamCount`] = teamCount;
-      updates[`/users/${uid}/teamBusiness`] = teamBiz;
+      // Sync member's live fields in /users/{uid} only when values differ
+      setIfChanged(`/users/${uid}/selfBusiness`, selfBiz, u.selfBusiness);
+      setIfChanged(`/users/${uid}/directCount`, directCount, u.directCount);
+      setIfChanged(`/users/${uid}/directMembersCount`, directCount, u.directMembersCount);
+      setIfChanged(`/users/${uid}/directBusiness`, directBiz, u.directBusiness);
+      setIfChanged(`/users/${uid}/directTeamBusiness`, directBiz, u.directTeamBusiness);
+      setIfChanged(`/users/${uid}/downlineMembersCount`, report.downlineMembersCount, u.downlineMembersCount);
+      setIfChanged(`/users/${uid}/downlineBusiness`, downlineBiz, u.downlineBusiness);
+      setIfChanged(`/users/${uid}/teamCount`, teamCount, u.teamCount);
+      setIfChanged(`/users/${uid}/teamBusiness`, teamBiz, u.teamBusiness);
 
-      updates[`/users/${uid}/selfBusinessCommission`] = 0;
-      updates[`/users/${uid}/directCommission`] = directComm;
-      updates[`/users/${uid}/directTeamCommission`] = directComm;
-      updates[`/users/${uid}/downlineCommission`] = downlineComm;
-      updates[`/users/${uid}/totalCommission`] = totalComm;
-      updates[`/users/${uid}/totalEarned`] = totalComm;
-      updates[`/users/${uid}/commissionPaid`] = paidPayout;
-      updates[`/users/${uid}/commissionUnpaid`] = unpaidPayout;
-      updates[`/users/${uid}/lastClosingDate`] = closingDate;
+      setIfChanged(`/users/${uid}/selfBusinessCommission`, 0, u.selfBusinessCommission);
+      setIfChanged(`/users/${uid}/directCommission`, directComm, u.directCommission);
+      setIfChanged(`/users/${uid}/directTeamCommission`, directComm, u.directTeamCommission);
+      setIfChanged(`/users/${uid}/downlineCommission`, downlineComm, u.downlineCommission);
+      setIfChanged(`/users/${uid}/totalCommission`, totalComm, u.totalCommission);
+      setIfChanged(`/users/${uid}/totalEarned`, totalComm, u.totalEarned);
+      setIfChanged(`/users/${uid}/commissionPaid`, paidPayout, u.commissionPaid);
+      setIfChanged(`/users/${uid}/commissionUnpaid`, unpaidPayout, u.commissionUnpaid);
+      setIfChanged(`/users/${uid}/lastClosingDate`, closingDate, u.lastClosingDate);
 
       const statement = {
         uid,

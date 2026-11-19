@@ -360,10 +360,10 @@ export default function PaperRegistrationForm({
     }
 
     try {
-      // 1. Primary: Cloudinary Direct Upload
-      const uploadResult = await uploadToCloudinary(file, folder);
+      // 1. Primary: Cloudinary Direct Upload (with automatic compressed Data URL fallback)
+      const uploadResult = await uploadToCloudinary(file);
       const remoteUrl = uploadResult?.secure_url || uploadResult?.url;
-      if (remoteUrl) {
+      if (remoteUrl && !String(remoteUrl).startsWith('blob:')) {
         setUrl(remoteUrl);
         if (isImage && setPreview) setPreview(remoteUrl);
       } else {
@@ -526,6 +526,19 @@ export default function PaperRegistrationForm({
     if (e) e.preventDefault();
     setErrorMsg('');
 
+    // Prevent submitting while any document upload is still in progress
+    if (
+      uploadingPhoto ||
+      uploadingSignature ||
+      uploadingAadhaar ||
+      uploadingAadhaarBack ||
+      uploadingPan ||
+      uploadingReceipt
+    ) {
+      setErrorMsg('दस्तावेज़ अपलोड हो रहे हैं, कृपया 2 सेकंड प्रतीक्षा करें और पुनः जमा करें। (Documents are uploading, please wait)');
+      return;
+    }
+
     // Validations
     if (!name.trim()) {
       setErrorMsg('कृपया समाज सेवी का नाम दर्ज करें।');
@@ -540,7 +553,10 @@ export default function PaperRegistrationForm({
     const cleanEmail = email.trim() || `${cleanPhone}@ucwf.online`;
     const cleanPassword = password.trim() || cleanPhone;
     const numAmount = Number(membershipAmount) || 500;
-    const cleanSponsor = (sponsorId || '9540648402').trim();
+    const rawSponsor = (sponsorId || 'UCWF-0001').trim();
+    const cleanSponsor = rawSponsor === '9540648402' ? 'UCWF-0001' : rawSponsor.toUpperCase();
+    const safePhotoUrl = photoUrl && !String(photoUrl).startsWith('blob:') ? photoUrl : '';
+    const safeSignatureUrl = signatureUrl && !String(signatureUrl).startsWith('blob:') ? signatureUrl : '';
 
     setLoading(true);
 
@@ -581,9 +597,9 @@ export default function PaperRegistrationForm({
         packageAmount: numAmount,
         packageTier: numAmount,
         packageName: `सहयोग संकल्प (₹${numAmount})`,
-        photoUrl: photoUrl || photoPreview || '',
+        photoUrl: safePhotoUrl,
         photoDocName: photoDocName || '',
-        signatureUrl: signatureUrl || signaturePreview || '',
+        signatureUrl: safeSignatureUrl,
         signatureDocName: signatureDocName || '',
         aadhaarDocUrl: aadhaarDocUrl || '',
         aadhaarDocName: aadhaarDocName || '',

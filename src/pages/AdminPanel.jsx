@@ -2189,6 +2189,92 @@ export default function AdminPanel() {
           </div>
         )}
 
+        {/* Firebase Cloud Firestore Real-Time Sync Status Banner */}
+        <div
+          className={`p-3.5 sm:p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+            cloudSync.isAdminEmail && cloudSync.pendingSyncCount === 0
+              ? 'bg-emerald-50/90 border-emerald-200 text-emerald-900'
+              : 'bg-amber-50/95 border-amber-300 text-amber-950'
+          }`}
+        >
+          <div className="flex items-start sm:items-center gap-2.5 text-xs">
+            <ShieldCheck
+              className={`w-5 h-5 shrink-0 mt-0.5 sm:mt-0 ${
+                cloudSync.isAdminEmail && cloudSync.pendingSyncCount === 0
+                  ? 'text-emerald-600'
+                  : 'text-amber-600'
+              }`}
+            />
+            <div>
+              <p className="font-black">
+                {cloudSync.isAdminEmail
+                  ? cloudSync.pendingSyncCount === 0
+                    ? `Firebase Cloud Firestore Live Connected (${cloudSync.email})`
+                    : `Firebase Cloud Sync Pending (${cloudSync.pendingSyncCount} records queued)`
+                  : 'डिवाइस लोकल सेव मोड — Cross-Device Cloud Firestore Sync के लिए Google Admin Sign-In करें'}
+              </p>
+              <p className="text-[11px] opacity-85 mt-0.5">
+                {cloudSync.isAdminEmail
+                  ? `Project: ${cloudSync.projectId} • हर नया सदस्य व अपडेट स्वचालित क्लाउड में सिंक हो रहा है।`
+                  : `नए सदस्य अभी तुरंत लिस्ट में जुड़ रहे हैं; सभी डिवाइस पर लाइव Firebase सिंक के लिए "${'singhshriyansh51@gmail.com'}" से कनेक्ट करें।`}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {!cloudSync.isAdminEmail ? (
+              <button
+                type="button"
+                disabled={cloudSyncLoading}
+                onClick={async () => {
+                  setCloudSyncLoading(true);
+                  try {
+                    const res = await loginWithGoogle();
+                    const syncRes = await forceSyncAllToCloud();
+                    if (syncRes?.authenticated) {
+                      showToast(`Google Cloud Sync Connected (${res?.user?.email || ''}) — ${syncRes.synced || 0} records synced!`);
+                    } else {
+                      showToast('Signed in. Admin sync requires singhshriyansh51@gmail.com.', 'error');
+                    }
+                  } catch (err) {
+                    showToast('Google Cloud Sync error: ' + (err?.message || 'Cancelled'), 'error');
+                  } finally {
+                    setCloudSyncLoading(false);
+                  }
+                }}
+                className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition active:scale-95 disabled:opacity-50 cursor-pointer"
+              >
+                {cloudSyncLoading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                <span>Connect Google Cloud Sync</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={cloudSyncLoading}
+                onClick={async () => {
+                  setCloudSyncLoading(true);
+                  try {
+                    const res = await forceSyncAllToCloud();
+                    showToast(`Cloud Sync Complete: ${res?.synced || 0} synced, ${res?.pending || 0} pending.`);
+                  } catch (err) {
+                    showToast('Cloud sync note: ' + (err?.message || err), 'error');
+                  } finally {
+                    setCloudSyncLoading(false);
+                  }
+                }}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition active:scale-95 disabled:opacity-50 cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncLoading ? 'animate-spin' : ''}`} />
+                <span>{cloudSyncLoading ? 'Syncing...' : 'Sync Cloud Now'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Festive Diwali Greeting Banner in Admin Panel */}
         {isDiwaliActive && <DiwaliBanner compact={true} className="mb-2" />}
 

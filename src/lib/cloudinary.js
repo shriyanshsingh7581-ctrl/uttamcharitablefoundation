@@ -7,18 +7,25 @@ export const CLOUDINARY_API_KEY = "229382297476775";
  * when Cloudinary upload fails or is unavailable.
  * Compact compression (<60KB) ensures instant form submission and stays well below Firestore's 1MB document limit.
  */
-export function fileToCompressedDataUrl(file, maxWidth = 700, quality = 0.65) {
-  return compressImageToBase64(file, maxWidth, quality);
+export function fileToCompressedDataUrl(file, maxWidth = 700, quality = 0.65, maxChars = 175000) {
+  return compressImageToBase64(file, maxWidth, quality, maxChars);
 }
 
-export function compressImageToBase64(file, maxWidth = 700, quality = 0.65) {
+export function compressImageToBase64(file, maxWidth = 700, quality = 0.65, maxChars = 175000) {
   return new Promise((resolve, reject) => {
     if (!file) return reject(new Error("No file provided"));
 
-    // If it's not an image (e.g., short video), read directly as Data URL
+    // If it's not an image (e.g., short video or PDF), read directly as Data URL
     if (!file.type.startsWith("image/")) {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
+      reader.onload = () => {
+        const res = String(reader.result || "");
+        if (res.length > maxChars * 1.6) {
+          resolve("");
+        } else {
+          resolve(res);
+        }
+      };
       reader.onerror = (err) => reject(err);
       reader.readAsDataURL(file);
       return;
@@ -30,20 +37,29 @@ export function compressImageToBase64(file, maxWidth = 700, quality = 0.65) {
       img.onload = () => {
         try {
           const canvas = document.createElement("canvas");
-          let width = img.width;
-          let height = img.height;
+          const ctx = canvas.getContext("2d");
+          let targetMaxW = maxWidth;
+          let targetQ = quality;
+          let outDataUrl = "";
 
-          if (width > maxWidth) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
+          // Iteratively downscale/compress until data URL fits cleanly inside Firestore document limits
+          for (let attempt = 0; attempt < 5; attempt++) {
+            let width = img.width;
+            let height = img.height;
+            if (width > targetMaxW) {
+              height = Math.round((height * targetMaxW) / width);
+              width = targetMaxW;
+            }
+            canvas.width = Math.max(1, width);
+            canvas.height = Math.max(1, height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            outDataUrl = canvas.toDataURL("image/jpeg", targetQ);
+            if (outDataUrl.length <= maxChars) break;
+            targetQ = Math.max(0.28, targetQ - 0.12);
+            targetMaxW = Math.max(240, Math.round(targetMaxW * 0.72));
           }
 
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(img, 0, 0, width, height);
-          const compressedDataUrl = canvas.toDataURL("image/jpeg", quality);
-          resolve(compressedDataUrl);
+          resolve(outDataUrl);
         } catch (err) {
           resolve(event.target.result);
         }
@@ -63,6 +79,7 @@ export function compressImageToBase64(file, maxWidth = 700, quality = 0.65) {
 export async function uploadToCloudinary(file, onProgress = null) {
   if (!file) throw new Error("कोई फ़ाइल चयनित नहीं है (No file selected)");
 
+  const progressCb = typeof onProgress === "function" ? onProgress : null;
   const isVideo = file.type.startsWith("video/");
   const resourceType = isVideo ? "video" : "image";
   const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`;
@@ -74,16 +91,16 @@ export async function uploadToCloudinary(file, onProgress = null) {
 
       formData.append("file", file);
       formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
-      formData.append("folder", "uttam_trust");
+      formData.append("folder", typeof onProgress === "string" && onProgress.trim() ? onProgress.trim() : "uttam_trust");
 
       xhr.open("POST", url, true);
       xhr.timeout = 6000; // 6 seconds max so slow network never blocks form submission
 
-      if (onProgress && xhr.upload) {
+      if (progressCb && xhr.upload) {
         xhr.upload.onprogress = (event) => {
           if (event.lengthComputable) {
             const percent = Math.round((event.loaded / event.total) * 100);
-            onProgress(percent);
+            progressCb(percent);
           }
         };
       }
@@ -119,9 +136,9 @@ export async function uploadToCloudinary(file, onProgress = null) {
     });
   } catch (cloudErr) {
     console.warn("Cloudinary upload fallback activated:", cloudErr.message);
-    if (onProgress) onProgress(50);
+    if (progressCb) progressCb(50);
     const dataUrl = await fileToCompressedDataUrl(file);
-    if (onProgress) onProgress(100);
+    if (progressCb) progressCb(100);
     return {
       url: dataUrl,
       publicId: `local_${Date.now()}`,

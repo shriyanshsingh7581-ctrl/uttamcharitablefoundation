@@ -10,6 +10,7 @@
  */
 
 import { db, ref, get, update, push, set } from '../lib/firebase';
+import { whenAdapterReady } from '../lib/rtdbFirestoreAdapter';
 import {
   DEFAULT_LEVEL_RATES,
   round2,
@@ -350,6 +351,7 @@ export function calculateMemberTreeMetrics(member, allUsers = {}, levelRates = n
  * 1-Click Recalculate & Fix All Member Commission Balances in Firebase RTDB
  */
 export async function syncAndFixAllMemberBalances() {
+  await whenAdapterReady();
   const usersSnap = await get(ref(db, 'users'));
   if (!usersSnap.exists()) {
     return { updatedCount: 0, message: 'No users found in database.' };
@@ -360,54 +362,68 @@ export async function syncAndFixAllMemberBalances() {
   const updates = {};
   let updatedCount = 0;
 
-  // Ensure canonical rates are persisted cleanly
-  updates['/settings/levelRates'] = { ...rates };
-  updates['/settings/selfBusinessRate'] = 0;
+  const setIfChanged = (path, val, prev) => {
+    if (prev !== val) {
+      updates[path] = val;
+      return true;
+    }
+    return false;
+  };
 
   Object.entries(allUsers).forEach(([uid, u]) => {
     if (!u) return;
     const report = buildMember12LevelReport({ uid, ...u }, allUsers, rates);
+    let userModified = false;
 
-    // Normalize sponsorId to canonical uppercase Member ID if matched
     const canonicalSponsor = normalizeSponsorId(u, allUsers);
     if (canonicalSponsor && canonicalSponsor !== 'DIRECT' && canonicalSponsor !== u.sponsorId) {
       updates[`/users/${uid}/sponsorId`] = canonicalSponsor;
+      userModified = true;
     }
 
-    // Ensure active status
     if (u.status !== 'blocked') {
-      updates[`/users/${uid}/status`] = 'active';
-      updates[`/users/${uid}/isApproved`] = true;
+      if (setIfChanged(`/users/${uid}/status`, 'active', u.status)) userModified = true;
+      if (setIfChanged(`/users/${uid}/isApproved`, true, u.isApproved)) userModified = true;
     }
 
-    updates[`/users/${uid}/selfBusiness`] = report.selfBusiness;
-    updates[`/users/${uid}/packageAmount`] = report.selfBusiness;
-    updates[`/users/${uid}/packageTier`] = report.selfBusiness;
-    updates[`/users/${uid}/selfBusinessCommission`] = 0;
-    updates[`/users/${uid}/directMembersCount`] = report.directMembersCount;
-    updates[`/users/${uid}/directCount`] = report.directMembersCount;
-    updates[`/users/${uid}/directBusiness`] = report.directBusiness;
-    updates[`/users/${uid}/directTeamBusiness`] = report.directBusiness;
-    updates[`/users/${uid}/directCommission`] = report.directCommission;
-    updates[`/users/${uid}/directTeamCommission`] = report.directCommission;
-    updates[`/users/${uid}/downlineMembersCount`] = report.downlineMembersCount;
-    updates[`/users/${uid}/downlineBusiness`] = report.downlineBusiness;
-    updates[`/users/${uid}/downlineCommission`] = report.downlineCommission;
-    updates[`/users/${uid}/teamCount`] = report.totalTeamMembers;
-    updates[`/users/${uid}/teamBusiness`] = report.totalTeamBusiness;
-    updates[`/users/${uid}/totalCommission`] = report.totalCommission;
-    updates[`/users/${uid}/totalEarned`] = report.totalCommission;
-    updates[`/users/${uid}/commissionPaid`] = report.paidPayout;
-    updates[`/users/${uid}/commissionUnpaid`] = report.unpaidPayout;
-    updates[`/users/${uid}/walletBalance`] = report.unpaidPayout;
-    updates[`/users/${uid}/commissionStatus`] =
+    const expectedStatus =
       report.unpaidPayout <= 0 && report.paidPayout > 0 && report.totalCommission > 0
         ? 'Paid'
         : report.paidPayout > 0
         ? 'Partial'
         : 'Unpaid';
 
-    updatedCount++;
+    const pairs = [
+      ['selfBusiness', report.selfBusiness],
+      ['packageAmount', report.selfBusiness],
+      ['packageTier', report.selfBusiness],
+      ['selfBusinessCommission', 0],
+      ['directMembersCount', report.directMembersCount],
+      ['directCount', report.directMembersCount],
+      ['directBusiness', report.directBusiness],
+      ['directTeamBusiness', report.directBusiness],
+      ['directCommission', report.directCommission],
+      ['directTeamCommission', report.directCommission],
+      ['downlineMembersCount', report.downlineMembersCount],
+      ['downlineBusiness', report.downlineBusiness],
+      ['downlineCommission', report.downlineCommission],
+      ['teamCount', report.totalTeamMembers],
+      ['teamBusiness', report.totalTeamBusiness],
+      ['totalCommission', report.totalCommission],
+      ['totalEarned', report.totalCommission],
+      ['commissionPaid', report.paidPayout],
+      ['commissionUnpaid', report.unpaidPayout],
+      ['walletBalance', report.unpaidPayout],
+      ['commissionStatus', expectedStatus],
+    ];
+
+    for (const [k, v] of pairs) {
+      if (setIfChanged(`/users/${uid}/${k}`, v, u[k])) {
+        userModified = true;
+      }
+    }
+
+    if (userModified) updatedCount++;
   });
 
   if (Object.keys(updates).length > 0) {
