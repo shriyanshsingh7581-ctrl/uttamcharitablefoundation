@@ -271,7 +271,7 @@ export const BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 
 /**
  * Universal Safe Text Helper:
- * Ensures no JavaScript object or Firebase timestamp ever collapses into JSX child
+ * Ensures no JavaScript object or database timestamp ever collapses into JSX child
  * Prevents React Error #31 and Error #130 permanently
  */
 export const safeText = (val, fallback = "") => {

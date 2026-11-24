@@ -21,8 +21,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
-import { rtdb } from '../lib/firebase';
-import { ref, push, set } from 'firebase/database';
+import { rtdb, ref, push, set } from '../lib/supabase';
 import { 
   FOUNDATION_DETAILS, 
   PACKAGES, 

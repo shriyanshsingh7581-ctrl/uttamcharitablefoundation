@@ -25,8 +25,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import AdminLayout from './AdminLayout';
-import { supabase } from '../../lib/supabase';
-import { db, ref, update, get } from '../../lib/firebase';
+import { supabase, db, ref, update, get } from '../../lib/supabase';
 import { distributeCommissions } from '../../utils/commission';
 import { parseAmount } from '../../utils/mlmUtils';
 import { useLanguage } from '../../contexts/LanguageContext';
@@ -97,7 +96,7 @@ export default function Approvals() {
       const { data, error } = await query;
 
       if (error || !data || data.length === 0) {
-        // Fallback to Firebase Realtime Database
+        // Fallback to Supabase Realtime Tree
         try {
           const fbSnap = await get(ref(db, 'members'));
           if (fbSnap.exists()) {
@@ -120,7 +119,7 @@ export default function Approvals() {
             setMembers([]);
           }
         } catch (e) {
-          console.warn('Firebase RTDB approvals fallback note:', e);
+          console.warn('Supabase Realtime approvals fallback note:', e);
           setMembers([]);
         }
       } else {
@@ -192,7 +191,7 @@ export default function Approvals() {
         })
         .eq('id', memberToApprove.id);
 
-      // Sync approval to Firebase Realtime Database
+      // Sync approval to Supabase Realtime Tree
       try {
         await update(ref(db, `members/${memberToApprove.id}`), {
           status: 'active',
@@ -214,11 +213,11 @@ export default function Approvals() {
           }).catch(() => {});
         }
       } catch (fbErr) {
-        console.warn('Firebase RTDB approval sync note:', fbErr);
+        console.warn('Supabase Realtime approval sync note:', fbErr);
       }
 
       if (updateError) {
-        console.warn('Supabase update note (fallback to Firebase):', updateError.message);
+        console.warn('Supabase update note:', updateError.message);
       }
 
       // 2. Ensure wallet exists for this member
@@ -291,7 +290,7 @@ export default function Approvals() {
         })
         .eq('id', memberToReject.id);
 
-      // Sync to Firebase RTDB
+      // Sync to Supabase Realtime Tree
       try {
         await update(ref(db, `members/${memberToReject.id}`), {
           status: 'rejected',
@@ -314,11 +313,11 @@ export default function Approvals() {
           }).catch(() => {});
         }
       } catch (fbErr) {
-        console.warn('Firebase RTDB rejection sync note:', fbErr);
+        console.warn('Supabase Realtime rejection sync note:', fbErr);
       }
 
       if (error) {
-        console.warn('Supabase reject warning (fallback to Firebase):', error.message);
+        console.warn('Supabase reject warning:', error.message);
       }
 
       showToast(`Registration for ${memberToReject.full_name} marked as rejected.`, 'info');

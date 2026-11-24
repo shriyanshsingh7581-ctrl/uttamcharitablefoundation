@@ -32,8 +32,7 @@ import {
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
-import { rtdb } from '../lib/firebase';
-import { ref, set, push, get, onValue } from 'firebase/database';
+import { rtdb, ref, set, push, get, onValue } from '../lib/supabase';
 import { uploadToCloudinary, compressImageToBase64 } from '../lib/cloudinary';
 import { useAuth } from '../contexts/AuthContext';
 import { distribute12LevelCommission } from '../utils/commission';

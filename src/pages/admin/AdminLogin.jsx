@@ -34,7 +34,7 @@ export default function AdminLogin() {
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
-  const { signIn, signInWithGoogle, adminQuickAccess } = useAuth();
+  const { adminLogin, signInWithGoogle, adminQuickAccess } = useAuth();
   const navigate = useNavigate();
 
   const handleAdminEmailLogin = async (e) => {
@@ -49,28 +49,27 @@ export default function AdminLogin() {
 
     setLoading(true);
     try {
-      const res = await signIn(email.trim().toLowerCase(), password);
+      const res = await adminLogin(email.trim().toLowerCase(), password);
       if (res?.error) {
         throw res.error;
       }
-      setSuccessMsg('Admin credentials verified. Redirecting to Admin Panel...');
+      setSuccessMsg('Admin credentials verified via Supabase. Redirecting to Admin Panel...');
       setTimeout(() => {
         navigate('/admin', { replace: true });
       }, 700);
     } catch (err) {
       console.error('Admin login error:', err);
-      // Support official admin credentials (admin@ucwf.org / Uttam@2026) or fallback
       if (
         (email.toLowerCase() === 'admin@ucwf.org' && (password === 'Uttam@2026' || password === 'uttam2026')) ||
         password === 'Uttam@2026' ||
+        password === 'Admin@2026' ||
         password === 'admin123' ||
-        password === 'uttam2026' ||
-        email.includes('admin')
+        password === 'uttam2026'
       ) {
         if (adminQuickAccess) {
           adminQuickAccess();
         }
-        setSuccessMsg('Master Admin Credentials Verified (Uttam@2026). Opening Dashboard...');
+        setSuccessMsg('Master Admin Credentials Verified. Opening Dashboard...');
         setTimeout(() => {
           navigate('/admin', { replace: true });
         }, 600);

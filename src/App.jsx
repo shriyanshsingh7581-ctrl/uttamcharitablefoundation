@@ -2,8 +2,6 @@ import React, { useEffect, useRef } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { DiwaliThemeProvider, useDiwaliTheme } from './contexts/DiwaliThemeContext';
-import { checkAndTriggerMidnightClosing } from './utils/closingEngine';
-import { useDataIntegrityGuard } from './hooks/useDataIntegrityGuard';
 
 // Components
 import Navbar from './components/Navbar';
@@ -223,13 +221,6 @@ function AppContent() {
 }
 
 export default function App() {
-  useDataIntegrityGuard();
-
-  useEffect(() => {
-    // Check and auto-generate daily midnight closing if missing
-    checkAndTriggerMidnightClosing();
-  }, []);
-
   return (
     <AuthProvider>
       <DiwaliThemeProvider>

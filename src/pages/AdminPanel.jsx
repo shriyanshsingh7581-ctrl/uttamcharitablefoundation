@@ -62,8 +62,7 @@ import { useDiwaliTheme } from '../contexts/DiwaliThemeContext';
 import DiwaliBanner from '../components/diwali/DiwaliBanner';
 import GlowingDiya from '../components/diwali/GlowingDiya';
 import { uploadToCloudinary } from '../lib/cloudinary';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue, update, remove, push, set } from 'firebase/database';
+import { rtdb, ref, onValue, update, remove, push, set } from '../lib/supabase';
 import { 
   getSavedLevelRates, 
   saveLevelRates, 
@@ -499,12 +498,7 @@ export default function AdminPanel() {
     exportToCSV(data, `UCWF_${wId}_Downline_Report_${getISTDateString ? getISTDateString() : new Date().toISOString().split('T')[0]}.csv`);
   };
 
-  // Auto-migrate all members with active package to 'active' status and recalculate
-  useEffect(() => {
-    autoMigrateAndRecalculateUsers().catch(err => console.warn('Auto-migration note:', err));
-  }, []);
-
-  // 1. Subscribe to Firebase RTDB Realtime updates
+  // 1. Subscribe to Supabase Realtime updates
   useEffect(() => {
     const unsubList = [];
     const onRtdbErr = (label) => (err) => {
@@ -963,7 +957,7 @@ export default function AdminPanel() {
   const handleSyncAndFixBalances = () => {
     openConfirmDialog(
       'Recalculate All Balances?',
-      'Are you sure you want to recalculate and fix all member commission balances in Firebase? This will overwrite any stale values with live mathematically verified downline tree totals.',
+      'Are you sure you want to recalculate and fix all member commission balances in Supabase? This will overwrite any stale values with live mathematically verified downline tree totals.',
       async () => {
         setIsSyncingBalances(true);
         setSyncStatusMsg('');
@@ -1357,7 +1351,7 @@ export default function AdminPanel() {
     document.body.removeChild(link);
   };
 
-  // Save Manual Level Rates (1 to 12) + Self Business Rate to Firebase
+  // Save Manual Level Rates (1 to 12) + Self Business Rate to Supabase
   const handleSaveLevelRates = async (e) => {
     if (e) e.preventDefault();
     setIsSavingRates(true);
@@ -2021,7 +2015,7 @@ export default function AdminPanel() {
           {/* Action Toolbar & Countdown Badge */}
           <div className="flex flex-wrap items-center gap-3">
             {/* Live Midnight Countdown Timer */}
-            <MidnightCountdownBadge onMidnightTrigger={() => {}} />
+            <MidnightCountdownBadge />
 
             {/* 1-Click Diwali Festival Theme Toggle (Requirement 1) */}
             <button

@@ -22,8 +22,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue } from 'firebase/database';
+import { rtdb, ref, onValue } from '../lib/supabase';
 import { FOUNDATION_DETAILS, formatINR, safeText } from '../lib/constants';
 import { useDiwaliTheme } from '../contexts/DiwaliThemeContext';
 import DiwaliBanner from '../components/diwali/DiwaliBanner';

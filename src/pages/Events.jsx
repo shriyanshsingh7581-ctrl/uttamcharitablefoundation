@@ -26,8 +26,7 @@ import { Modal } from '../components/ui/Modal';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
-import { supabase } from '../lib/supabase';
-import { db, ref, onValue } from '../lib/firebase';
+import { supabase, db, ref, onValue } from '../lib/supabase';
 import {
   FOUNDATION_NAME,
   FOUNDATION_NAME_HINDI,
@@ -45,11 +44,11 @@ export default function Events() {
   const [volunteerSuccess, setVolunteerSuccess] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
 
-  // Fetch from Firebase Realtime Database & Supabase
+  // Fetch from Supabase Realtime & PostgreSQL
   useEffect(() => {
     let isMounted = true;
 
-    // 1. Listen to Firebase Realtime Database /events
+    // 1. Listen to Supabase Realtime /events
     let unsubRtdb = null;
     try {
       const eventsRef = ref(db, 'events');
@@ -73,7 +72,7 @@ export default function Events() {
         }
       });
     } catch (e) {
-      console.warn('Firebase RTDB events note:', e);
+      console.warn('Supabase Realtime events note:', e);
     }
 
     // 2. Fallback / Supabase fetch if RTDB had no records

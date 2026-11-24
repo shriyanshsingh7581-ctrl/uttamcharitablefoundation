@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue, set } from 'firebase/database';
+import { rtdb, ref, onValue, set } from '../lib/supabase';
 
 const DiwaliThemeContext = createContext({
   isDiwaliActive: true,
@@ -33,7 +32,6 @@ export function DiwaliThemeProvider({ children }) {
             localStorage.setItem('ucwf_diwali_theme', String(active));
           } catch {}
         } else {
-          // If not configured in Firebase yet, default to TRUE as requested
           setIsDiwaliActive(true);
           try {
             localStorage.setItem('ucwf_diwali_theme', 'true');
@@ -59,7 +57,7 @@ export function DiwaliThemeProvider({ children }) {
     try {
       await set(ref(rtdb, 'settings/diwaliTheme'), nextState);
     } catch (err) {
-      console.error('Failed to update Diwali theme in Firebase:', err);
+      console.error('Failed to update Diwali theme in Supabase:', err);
     }
   };
 
@@ -71,7 +69,7 @@ export function DiwaliThemeProvider({ children }) {
     try {
       await set(ref(rtdb, 'settings/diwaliTheme'), active);
     } catch (err) {
-      console.error('Failed to set Diwali theme in Firebase:', err);
+      console.error('Failed to set Diwali theme in Supabase:', err);
     }
   };
 

@@ -16,8 +16,7 @@ import {
   QrCode
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue } from 'firebase/database';
+import { rtdb, ref, onValue } from '../lib/supabase';
 import { FOUNDATION_DETAILS, formatINR, safeText } from '../lib/constants';
 import { getMemberFullName, parseAmount, normId } from '../utils/mlmUtils';
 import { PRESIDENT_STAMP_SIGNATURE_BASE64 } from '../lib/signature-asset';

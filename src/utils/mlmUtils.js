@@ -8,7 +8,7 @@
  *    - Full Member ID (e.g. UCWF-2026-8647, UCWF-2026-6401)
  *    - Last 4+ digits of Member ID (e.g. 8647, 6401)
  *    - Registered mobile number (10 digits)
- *    - Firebase UID
+ *    - Member / Supabase UID
  *    - Sponsor Name
  * 3. Exact 12-Level Generation Commission rates (Total 50% Distribution):
  *    L1=20%, L2=8%, L3=5%, L4=4%, L5=3%, L6=2.5%, L7=2%, L8=1.5%, L9=1%, L10=1%, L11=1%, L12=1%
@@ -118,7 +118,7 @@ export function normalizeLevelRates(customRates = null) {
 
   const normalized = { ...DEFAULT_LEVEL_RATES };
   if (Array.isArray(customRates)) {
-    // Handle 0-indexed 12-item array vs 1-indexed 13-item Firebase array [null, 20, 8, ...]
+    // Handle 0-indexed 12-item array vs 1-indexed 13-item database array [null, 20, 8, ...]
     const isOneIndexed = customRates.length >= 13 && (customRates[0] === null || customRates[0] === undefined);
     for (let lvl = 1; lvl <= 12; lvl++) {
       const raw = isOneIndexed ? customRates[lvl] : customRates[lvl - 1];

@@ -30,8 +30,7 @@ import {
   safeText 
 } from '../lib/constants';
 import { uploadToCloudinary } from '../lib/cloudinary';
-import { rtdb } from '../lib/firebase';
-import { ref, get, update } from 'firebase/database';
+import { rtdb, ref, get, update } from '../lib/supabase';
 import { getMemberFullName } from '../utils/mlmUtils';
 import SafeQRCode from '../components/ui/SafeQRCode';
 
@@ -229,7 +228,7 @@ export default function IDCardPage() {
     }
   };
 
-  // Save fields directly to Firebase RTDB
+  // Save fields directly to Supabase
   const handleSaveToDatabase = async () => {
     const targetUid = selectedUser?.uid || currentUser?.uid;
     if (!targetUid) {

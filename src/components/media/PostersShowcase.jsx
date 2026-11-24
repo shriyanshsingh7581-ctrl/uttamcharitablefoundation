@@ -9,8 +9,7 @@ import {
   Calendar,
   Image as ImageIcon
 } from 'lucide-react';
-import { rtdb } from '../../lib/firebase';
-import { ref, onValue } from 'firebase/database';
+import { rtdb, ref, onValue } from '../../lib/supabase';
 import GlowingDiya from '../diwali/GlowingDiya';
 import { safeText } from '../../lib/constants';
 

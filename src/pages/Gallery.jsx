@@ -13,8 +13,7 @@ import {
   Sparkles,
   Loader2
 } from 'lucide-react';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue } from 'firebase/database';
+import { rtdb, ref, onValue } from '../lib/supabase';
 import { safeText } from '../lib/constants';
 import MediaUploadModal from '../components/MediaUploadModal';
 import { useAuth } from '../contexts/AuthContext';
@@ -29,7 +28,7 @@ export default function Gallery() {
   const [lightboxItem, setLightboxItem] = useState(null);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
 
-  // Fetch all approved media from Firebase RTDB with 8s timeout guard & error callback
+  // Fetch all approved media from Supabase with 8s timeout guard & error callback
   useEffect(() => {
     const timer = setTimeout(() => setLoading(false), 8000);
     const mediaRef = ref(rtdb, 'media_submissions');

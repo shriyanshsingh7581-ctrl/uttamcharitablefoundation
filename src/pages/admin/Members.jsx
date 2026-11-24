@@ -40,7 +40,7 @@ import {
   PhoneCall,
 } from 'lucide-react';
 import AdminLayout from './AdminLayout';
-import { db, ref, get, set, update, remove, onValue, off } from '../../lib/firebase';
+import { db, ref, get, set, update, remove, onValue, off } from '../../lib/supabase';
 import { PACKAGES, BLOOD_GROUPS } from '../../lib/constants';
 import {
   buildMember12LevelReport,
@@ -131,7 +131,7 @@ export default function Members() {
     }
   };
 
-  // Live Firebase Realtime Database Listener for /users and /members (with 8s timeout guard)
+  // Live Supabase Realtime Listener for /users and /members (with 8s timeout guard)
   useEffect(() => {
     setLoading(true);
     let settled = false;
@@ -234,7 +234,7 @@ export default function Members() {
         syncCombinedUsers();
       },
       (err) => {
-        console.warn('Firebase /users live listener error:', err);
+        console.warn('Supabase /users live listener error:', err);
         settled = true;
         setLoading(false);
         setRefreshing(false);
@@ -248,7 +248,7 @@ export default function Members() {
         syncCombinedUsers();
       },
       (err) => {
-        console.warn('Firebase /members live listener error:', err);
+        console.warn('Supabase /members live listener error:', err);
       }
     );
 
@@ -262,7 +262,7 @@ export default function Members() {
         }
       },
       (err) => {
-        console.warn('Firebase /wallets live listener error:', err);
+        console.warn('Supabase /wallets live listener error:', err);
       }
     );
 
@@ -477,7 +477,7 @@ export default function Members() {
 
       setSelectedUser(updatedPayload);
       setIsEditing(false);
-      showToast('User credentials and details updated successfully in Firebase Realtime Database!', 'success');
+      showToast('User credentials and details updated successfully in Supabase Realtime Database!', 'success');
     } catch (err) {
       console.error('Error saving user changes:', err);
       showToast(err.message || 'Failed to update user', 'error');
@@ -710,7 +710,7 @@ export default function Members() {
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-900 border border-emerald-200">
                 <Users className="w-3.5 h-3.5 text-emerald-700" />
-                सदस्य एवं यूज़र्स प्रबंधन (Firebase Realtime)
+                सदस्य एवं यूज़र्स प्रबंधन (Supabase Realtime)
               </span>
               <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
@@ -724,7 +724,7 @@ export default function Members() {
               </span>
             </h1>
             <p className="text-xs sm:text-sm text-gray-500 mt-0.5">
-              Real-time directory powered by Firebase RTDB (`/users`). View passwords, WhatsApp credentials, sponsor tree, and financial records.
+              Real-time directory powered by Supabase (`members`). View passwords, WhatsApp credentials, sponsor tree, and financial records.
             </p>
           </div>
 
@@ -1058,7 +1058,7 @@ export default function Members() {
            ========================================================================= */}
         {loading ? (
           <div className="py-24 flex justify-center">
-            <LoadingSpinner size="lg" text="Connecting to Firebase Realtime Database..." />
+            <LoadingSpinner size="lg" text="Connecting to Supabase Realtime Database..." />
           </div>
         ) : filteredUsers.length === 0 ? (
           <div className="bg-white rounded-3xl border border-gray-100 p-12 text-center shadow-sm">
@@ -1734,7 +1734,7 @@ export default function Members() {
                     <Key className="w-4 h-4 text-emerald-600" />
                     Personal & Login Credentials / व्यक्तिगत एवं लॉगिन क्रेडेंशियल्स
                   </h4>
-                  <span className="text-[11px] text-gray-400">Firebase RTDB: `/users/{selectedUser.uid}`</span>
+                  <span className="text-[11px] text-gray-400">Supabase Record: `members/{selectedUser.uid}`</span>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">

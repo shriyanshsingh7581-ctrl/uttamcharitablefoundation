@@ -1,22 +1,14 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import {
-  auth,
+  supabase,
   db,
-  googleProvider,
-  signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  firebaseSignOut,
-  onAuthStateChanged,
   ref,
   set,
   get,
   update,
   onValue,
   off,
-  forceSyncAllToCloud,
-} from '../lib/firebase';
-import { safeText } from '../lib/constants';
+} from '../lib/supabase';
 import {
   generateUniqueMemberId,
   normId,
@@ -32,7 +24,6 @@ export const AuthProvider = ({ children }) => {
   const [member, setMember] = useState(null);
   const [loading, setLoading] = useState(() => {
     try {
-      // If admin session is already stored in localStorage, do not block AdminRoute on initial spinner
       return localStorage.getItem('ucwf_admin_session') !== 'true';
     } catch {
       return true;
@@ -46,14 +37,13 @@ export const AuthProvider = ({ children }) => {
     }
   });
 
-  // Helper to prevent hanging promises when Firebase network is slow or unconfigured
   const withTimeout = (promise, ms = 3500) =>
     Promise.race([
       promise,
       new Promise((_, reject) => setTimeout(() => reject(new Error('Request timed out')), ms)),
     ]);
 
-  // Listen to Session, RTDB Member Listener & Firebase Auth State
+  // Listen to Stored Session & Supabase Realtime Member Profile Updates
   useEffect(() => {
     let memberRef = null;
     let isMounted = true;
@@ -86,12 +76,10 @@ export const AuthProvider = ({ children }) => {
       return false;
     };
 
-    // Immediately hydrate stored admin session synchronously so Admin Panel opens without delay
     if (applyStoredAdminFallback()) {
       setLoading(false);
     }
 
-    // Safety net: never leave the entire portal stuck on LoadingFallback if Firebase Auth/RTDB stalls
     const loadingSafetyTimer = setTimeout(() => {
       if (isMounted) {
         applyStoredAdminFallback();
@@ -99,7 +87,6 @@ export const AuthProvider = ({ children }) => {
       }
     }, 3000);
 
-    // 1. Restore local member session from RTDB
     const restoreMemberSession = async () => {
       try {
         const stored = localStorage.getItem('ucwf_member_session');
@@ -127,7 +114,6 @@ export const AuthProvider = ({ children }) => {
               setUser(authUserObj);
               setMember({ ...data, uid: targetUid });
 
-              // Attach active realtime listener to keep wallet & profile synced
               memberRef = ref(db, `users/${targetUid}`);
               onValue(
                 memberRef,
@@ -165,94 +151,22 @@ export const AuthProvider = ({ children }) => {
       return false;
     };
 
-    // 2. Firebase Auth listener for Google logins or traditional Firebase users
-    const unsubscribeAuth = onAuthStateChanged(
-      auth,
-      async (firebaseUser) => {
-        const restored = await restoreMemberSession();
-        if (restored) return;
-
-        if (firebaseUser) {
-          const uid = firebaseUser.uid;
-          memberRef = ref(db, `users/${uid}`);
-
-          onValue(
-            memberRef,
-            (snapshot) => {
-              if (!isMounted) return;
-              if (snapshot.exists()) {
-                const data = snapshot.val();
-                setUser(firebaseUser);
-                setMember({ ...data, uid });
-
-                const gEmail = (firebaseUser.email || '').trim().toLowerCase();
-                if (
-                  data.is_admin === true ||
-                  data.role === 'admin' ||
-                  gEmail === 'admin@ucwf.online' ||
-                  gEmail === 'admin@uttam.org' ||
-                  localStorage.getItem('ucwf_admin_session') === 'true'
-                ) {
-                  setIsAdmin(true);
-                  try {
-                    localStorage.setItem('ucwf_admin_session', 'true');
-                  } catch {}
-                }
-              } else {
-                setUser(firebaseUser);
-                setMember(null);
-                const gEmail = (firebaseUser.email || '').trim().toLowerCase();
-                if (gEmail === 'admin@ucwf.online') {
-                  setIsAdmin(true);
-                  try {
-                    localStorage.setItem('ucwf_admin_session', 'true');
-                  } catch {}
-                } else {
-                  applyStoredAdminFallback();
-                }
-              }
-              setLoading(false);
-            },
-            (err) => {
-              console.warn('Realtime member listener error:', err);
-              if (isMounted) {
-                applyStoredAdminFallback();
-                setLoading(false);
-              }
-            }
-          );
-        } else {
-          if (!applyStoredAdminFallback()) {
-            if (isMounted) setIsAdmin(false);
-          }
-          if (isMounted) setLoading(false);
-        }
-      },
-      (authErr) => {
-        console.warn('Firebase Auth listener error:', authErr);
-        if (isMounted) {
-          applyStoredAdminFallback();
-          setLoading(false);
-        }
-      }
-    );
-
-    // Execute session restore on initial mount
     restoreMemberSession().finally(() => {
-      // If neither local session nor admin session exists, do not wait needlessly if auth is offline
+      if (isMounted) {
+        applyStoredAdminFallback();
+        setLoading(false);
+      }
     });
 
     return () => {
       isMounted = false;
       clearTimeout(loadingSafetyTimer);
-      unsubscribeAuth();
       if (memberRef) {
         off(memberRef);
       }
     };
   }, []);
 
-  // Format readable Indian date
   const getReadableDate = () => {
     return new Date().toLocaleString('en-IN', {
       day: 'numeric',
@@ -264,14 +178,8 @@ export const AuthProvider = ({ children }) => {
     });
   };
 
-  // Generate unique Member ID: UCWF-2026-XXXX
-  const generateMemberId = () => {
-    const randomNum = Math.floor(1000 + Math.random() * 9000);
-    return `UCWF-2026-${randomNum}`;
-  };
-
   /**
-   * Register new member directly in Realtime Database (/users/{uid})
+   * Register new member directly in Supabase `members` table (via unified `users/{uid}` sync)
    * Ensures plainPassword, Member ID, phone, and name are 100% saved and login-ready.
    */
   const registerUser = async (formDataOrEmail, possiblePassword, possibleExtra) => {
@@ -318,9 +226,13 @@ export const AuthProvider = ({ children }) => {
     const newMemberData = {
       ...data,
       uid: newUid,
+      id: newUid,
       memberId: memberId,
+      member_id: memberId,
       salutation: salutation,
       name: name,
+      fullName: name,
+      full_name: name,
       displayName: data.displayName || `${salutation} ${name}`.trim(),
       padNaam: data.padNaam || 'कार्यकारिणी सदस्य',
       fatherOrSpouseName: data.fatherOrSpouseName || data.fatherName || '',
@@ -334,6 +246,7 @@ export const AuthProvider = ({ children }) => {
       password: password,
       plainPassword: password,
       phone: cleanPhone,
+      mobile: cleanPhone,
       city: data.city || '',
       state: data.state || 'Uttarakhand',
       dob: data.dob || '',
@@ -342,12 +255,15 @@ export const AuthProvider = ({ children }) => {
       qualification: data.qualification || '',
       gender: data.gender || 'पुरुष',
       sponsorId: resolvedSponsorId,
+      sponsor_id: resolvedSponsorId,
       sponsorUid: data.sponsorUid || matchedSponsorObj?.uid || '',
       sponsorName: data.sponsorName || (matchedSponsorObj ? getMemberFullName(matchedSponsorObj) : (resolvedSponsorId === 'DIRECT' ? 'उत्तम चैरिटेबल ट्रस्ट' : '')),
       packageTier: resolvedPackageAmt,
       packageAmount: resolvedPackageAmt,
+      package_amount: resolvedPackageAmt,
       packageName: data.packageName || `सहयोग संकल्प (₹${resolvedPackageAmt})`,
       photoUrl: data.photoUrl || '',
+      photo_url: data.photoUrl || '',
       signatureUrl: data.signatureUrl || '',
       aadhaarDocUrl: data.aadhaarDocUrl || '',
       declarationAccepted: data.declarationAccepted !== false,
@@ -357,7 +273,7 @@ export const AuthProvider = ({ children }) => {
       paymentVerified: data.paymentVerified !== false,
       kycVerified: data.kycVerified !== false,
       selfBusiness: resolvedPackageAmt,
-      selfBusinessCommission: 0, // STRICTLY ZERO COMMISSION ON OWN DONATION / FORM
+      selfBusinessCommission: 0,
       walletBalance: Number(data.walletBalance || 0),
       totalEarned: Number(data.totalEarned || 0),
       totalWithdrawn: Number(data.totalWithdrawn || 0),
@@ -372,10 +288,9 @@ export const AuthProvider = ({ children }) => {
       timestamp: data.timestamp || Date.now(),
     };
 
-    // Save directly to Firebase Database Adapter
+    // Save directly to Supabase (syncs both in-memory tree and public.members table)
     await set(ref(db, `users/${newUid}`), newMemberData);
 
-    // Only auto-login the newly registered member when registering from public /register while logged out
     const adminStored = typeof localStorage !== 'undefined' && localStorage.getItem('ucwf_admin_session') === 'true';
     const hasActiveSession = Boolean(user || member || isAdmin || adminStored || data.isAdminMode || data.preserveSession);
     if (!hasActiveSession) {
@@ -401,12 +316,12 @@ export const AuthProvider = ({ children }) => {
   };
 
   /**
-   * Universal Login supporting:
+   * 100% Supabase Member Login supporting:
    * 1. Member ID (e.g. UCWF-2026-XXXX, UCWF-0001, etc.)
-   * 2. Username / Name (e.g. Raam, Pawan Saini, Rajendra Singh, etc.)
+   * 2. Username / Name
    * 3. Mobile Number (10 digits)
    * 4. Email Address
-   * 5. Password (matches RTDB password / plainPassword / phone / default)
+   * 5. Password (matches Supabase members table password / plainPassword / phone)
    */
   const loginUser = async (identifier, password) => {
     if (!identifier || !identifier.trim()) {
@@ -422,7 +337,29 @@ export const AuthProvider = ({ children }) => {
     const cleanLowerId = rawId.toLowerCase();
     const inputPassword = String(password).trim();
 
-    // 1. Fetch all users from RTDB
+    // Refresh from Supabase `members` table if online
+    try {
+      const { data: remoteRows } = await supabase.from('members').select('*');
+      if (Array.isArray(remoteRows) && remoteRows.length > 0) {
+        const currentSnap = await get(ref(db, 'users'));
+        const existingMap = currentSnap.exists() ? currentSnap.val() : {};
+        for (const r of remoteRows) {
+          const rId = r.id || r.uid;
+          if (rId && !existingMap[rId]) {
+            await set(ref(db, `users/${rId}`), {
+              ...(r.data || {}),
+              ...r,
+              uid: rId,
+              memberId: r.member_id || r.data?.memberId || rId,
+              name: r.full_name || r.name || r.data?.name || 'Member',
+            });
+          }
+        }
+      }
+    } catch {
+      // Continue with synced tree
+    }
+
     const usersSnap = await get(ref(db, 'users'));
     if (!usersSnap.exists()) {
       throw new Error('डेटाबेस में कोई सदस्य खाता नहीं मिला। (No accounts found in database)');
@@ -432,25 +369,22 @@ export const AuthProvider = ({ children }) => {
     let matchedUser = null;
     let matchedUid = null;
 
-    // Search algorithm with prioritized matching
     for (const [uid, u] of Object.entries(allUsers)) {
       if (!u) continue;
 
-      const uMemberId = (u.memberId || '').trim().toUpperCase();
-      const uPhone = (u.phone || '').replace(/\D/g, '').slice(-10);
+      const uMemberId = (u.memberId || u.member_id || '').trim().toUpperCase();
+      const uPhone = (u.phone || u.mobile || '').replace(/\D/g, '').slice(-10);
       const uEmail = (u.email || '').trim().toLowerCase();
-      const uName = (u.name || '').trim().toLowerCase();
+      const uName = (u.name || u.full_name || '').trim().toLowerCase();
       const uDisplayName = (u.displayName || '').trim().toLowerCase();
       const uUsername = (u.username || '').trim().toLowerCase();
 
-      // Check 1: Member ID exact match (e.g. "UCWF-2026-6401" or "UCWF-0001")
       if (uMemberId && uMemberId === cleanUpperId) {
         matchedUser = u;
         matchedUid = uid;
         break;
       }
 
-      // Check 1b: Last 4+ digits of Member ID (e.g. "6401" matches "UCWF-2026-6401")
       if (cleanUpperId.length >= 4) {
         const uDigits = uMemberId.replace(/\D/g, '');
         const searchDigits = cleanUpperId.replace(/\D/g, '');
@@ -467,21 +401,18 @@ export const AuthProvider = ({ children }) => {
         }
       }
 
-      // Check 2: Mobile Number match (10 digits)
       if (cleanDigits && cleanDigits.length === 10 && uPhone === cleanDigits) {
         matchedUser = u;
         matchedUid = uid;
         break;
       }
 
-      // Check 3: Email match
       if (cleanLowerId.includes('@') && uEmail === cleanLowerId) {
         matchedUser = u;
         matchedUid = uid;
         break;
       }
 
-      // Check 4: Username / Name match
       if (
         (uName && uName === cleanLowerId) ||
         (uDisplayName && uDisplayName === cleanLowerId) ||
@@ -492,7 +423,6 @@ export const AuthProvider = ({ children }) => {
         break;
       }
 
-      // Check 5: Stripped name match (without श्री, डॉ, etc.)
       const strippedName = uName.replace(/^(श्री|डॉ\.|डॉ|smt|mr|mrs|dr|dr\.)\s+/i, '').trim();
       if (strippedName && strippedName === cleanLowerId) {
         matchedUser = u;
@@ -501,11 +431,10 @@ export const AuthProvider = ({ children }) => {
       }
     }
 
-    // Secondary pass: loose partial match on name if not yet matched
     if (!matchedUser && cleanLowerId.length >= 3 && !cleanLowerId.includes('@')) {
       for (const [uid, u] of Object.entries(allUsers)) {
         if (!u) continue;
-        const uName = (u.name || '').trim().toLowerCase();
+        const uName = (u.name || u.full_name || '').trim().toLowerCase();
         if (uName && (uName.includes(cleanLowerId) || cleanLowerId.includes(uName))) {
           matchedUser = u;
           matchedUid = uid;
@@ -518,9 +447,8 @@ export const AuthProvider = ({ children }) => {
       throw new Error(`इस विवरण ("${rawId}") से कोई सदस्य खाता नहीं मिला। कृपया अपनी मेंबर आईडी, यूज़रनेम अथवा मोबाइल नंबर की जांच करें।`);
     }
 
-    // 2. Validate Password
     const dbPassword = String(matchedUser.password || matchedUser.plainPassword || '').trim();
-    const uPhone = (matchedUser.phone || '').replace(/\D/g, '').slice(-10);
+    const uPhone = (matchedUser.phone || matchedUser.mobile || '').replace(/\D/g, '').slice(-10);
 
     const isPasswordValid =
       (dbPassword && dbPassword === inputPassword) ||
@@ -535,7 +463,6 @@ export const AuthProvider = ({ children }) => {
       throw new Error('गलत पासवर्ड! कृपया सही पासवर्ड दर्ज करें। (Incorrect Password. Please check and try again)');
     }
 
-    // 3. Establish active session
     const authUserObj = {
       uid: matchedUid,
       email: matchedUser.email || `${uPhone || 'member'}@ucwf.online`,
@@ -548,7 +475,6 @@ export const AuthProvider = ({ children }) => {
     setUser(authUserObj);
     setMember({ ...matchedUser, uid: matchedUid });
 
-    // Store in localStorage for persistence across page reload
     try {
       localStorage.setItem(
         'ucwf_member_session',
@@ -561,7 +487,6 @@ export const AuthProvider = ({ children }) => {
       );
     } catch {}
 
-    // Attach active realtime listener to keep wallet & profile synced
     try {
       onValue(ref(db, `users/${matchedUid}`), (liveSnap) => {
         if (liveSnap.exists()) {
@@ -570,7 +495,6 @@ export const AuthProvider = ({ children }) => {
       });
     } catch {}
 
-    // Check if user is admin
     if (
       matchedUser.is_admin === true ||
       matchedUser.role === 'admin' ||
@@ -591,97 +515,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   /**
-   * Google Sign-In with auto-save to /users/{uid}
-   */
-  const loginWithGoogle = async () => {
-    const result = await signInWithPopup(auth, googleProvider);
-    const googleUser = result.user;
-    const uid = googleUser.uid;
-
-    const googleEmail = (googleUser.email || '').trim().toLowerCase();
-    const isGoogleAdmin = googleEmail === 'admin@ucwf.online';
-
-    const userRef = ref(db, `users/${uid}`);
-    const snap = await get(userRef);
-
-    if (!snap.exists()) {
-      const defaultPassword = 'UCWF@1234';
-      let allUsers = {};
-      try {
-        const allSnap = await get(ref(db, 'users'));
-        if (allSnap.exists()) allUsers = allSnap.val() || {};
-      } catch {}
-      const memberId = isGoogleAdmin ? 'UCWF-0001' : generateUniqueMemberId(allUsers);
-      const createdAt = getReadableDate();
-
-      const newGoogleMember = {
-        uid: uid,
-        memberId: memberId,
-        salutation: 'श्री',
-        name: googleUser.displayName || (isGoogleAdmin ? 'Super Admin' : 'Foundation Member'),
-        fatherOrSpouseName: '',
-        email: googleEmail,
-        password: defaultPassword,
-        plainPassword: defaultPassword,
-        phone: googleUser.phoneNumber || '',
-        city: 'India',
-        bloodGroup: 'O+',
-        sponsorId: 'DIRECT',
-        packageTier: 0,
-        status: 'active',
-        isApproved: true,
-        ...(isGoogleAdmin ? { role: 'admin', is_admin: true } : {}),
-        walletBalance: 0,
-        totalEarned: 0,
-        totalWithdrawn: 0,
-        avatar_url: googleUser.photoURL || '',
-        bankDetails: {
-          upiId: '',
-          bankName: '',
-          accountNumber: '',
-          ifscCode: '',
-          accountHolder: '',
-        },
-        createdAt: createdAt,
-        timestamp: Date.now(),
-      };
-
-      await set(userRef, newGoogleMember);
-      setMember(newGoogleMember);
-      setUser(googleUser);
-      try {
-        localStorage.setItem(
-          'ucwf_member_session',
-          JSON.stringify({ uid: uid, memberId: memberId, phone: googleUser.phoneNumber || '' })
-        );
-      } catch {}
-    } else {
-      const data = snap.val();
-      setMember({ ...data, uid });
-      setUser(googleUser);
-      try {
-        localStorage.setItem(
-          'ucwf_member_session',
-          JSON.stringify({ uid: uid, memberId: data.memberId, phone: data.phone || '' })
-        );
-      } catch {}
-    }
-
-    if (isGoogleAdmin) {
-      setIsAdmin(true);
-      try {
-        localStorage.setItem('ucwf_admin_session', 'true');
-      } catch {}
-      try {
-        await forceSyncAllToCloud();
-      } catch {}
-    }
-
-    return result;
-  };
-
-  /**
-   * Admin Authentication (Supports hardcoded credentials and database admin role)
+   * 100% Supabase Admin Login (Verifies against Supabase `admins` & `members` tables + master admin credentials)
    */
   const adminLogin = async (usernameOrEmail, password) => {
     const rawUser = (usernameOrEmail || '').trim();
@@ -692,7 +526,6 @@ export const AuthProvider = ({ children }) => {
       throw new Error('कृपया व्यवस्थापक पासवर्ड दर्ज करें। (Please enter Admin Password)');
     }
 
-    // List of accepted Master Admin Passwords
     const MASTER_ADMIN_PASSWORDS = [
       'Admin@2026',
       'admin@2026',
@@ -725,7 +558,6 @@ export const AuthProvider = ({ children }) => {
 
     const isMasterPassword = MASTER_ADMIN_PASSWORDS.includes(cleanPass);
 
-    // List of accepted Admin Usernames / Identifiers
     const MASTER_ADMIN_USERS = [
       '',
       'admin',
@@ -746,7 +578,61 @@ export const AuthProvider = ({ children }) => {
 
     const isMasterUser = !rawUser || MASTER_ADMIN_USERS.includes(cleanUser);
 
-    // 1. Direct Master Admin check
+    // 1. Check Supabase `admins` table first if online
+    try {
+      const { data: adminRows } = await supabase.from('admins').select('*');
+      if (Array.isArray(adminRows) && adminRows.length > 0) {
+        const matchedAdmin = adminRows.find((a) => {
+          const aUser = String(a.username || '').toLowerCase();
+          const aEmail = String(a.email || '').toLowerCase();
+          const aPhone = String(a.phone || '').replace(/\D/g, '').slice(-10);
+          const userOk =
+            !cleanUser ||
+            cleanUser === aUser ||
+            cleanUser === aEmail ||
+            cleanUser === aPhone ||
+            isMasterUser;
+          const passOk = String(a.password || '') === cleanPass || isMasterPassword;
+          return userOk && passOk;
+        });
+
+        if (matchedAdmin) {
+          const adminData = {
+            uid: matchedAdmin.id || 'head_office_admin',
+            memberId: 'UCWF-0001',
+            name: matchedAdmin.full_name || 'राजेन्द्र सिंह सैनी',
+            displayName: `${matchedAdmin.full_name || 'राजेन्द्र सिंह सैनी'} (Super Admin)`,
+            phone: matchedAdmin.phone || '9540648402',
+            email: matchedAdmin.email || 'admin@ucwf.online',
+            role: 'admin',
+            is_admin: true,
+          };
+          setUser({
+            uid: adminData.uid,
+            email: adminData.email,
+            displayName: adminData.displayName,
+            phoneNumber: adminData.phone,
+            memberId: 'UCWF-0001',
+            isAdmin: true,
+          });
+          setMember(adminData);
+          setIsAdmin(true);
+          setLoading(false);
+          try {
+            localStorage.setItem('ucwf_admin_session', 'true');
+            localStorage.setItem(
+              'ucwf_member_session',
+              JSON.stringify({ uid: adminData.uid, memberId: 'UCWF-0001', phone: adminData.phone })
+            );
+          } catch {}
+          return { success: true, role: 'admin' };
+        }
+      }
+    } catch {
+      // Fall through to master admin & members check
+    }
+
+    // 2. Direct Master Admin check
     if (isMasterPassword && isMasterUser) {
       const adminData = {
         uid: 'head_office_admin',
@@ -781,7 +667,7 @@ export const AuthProvider = ({ children }) => {
       return { success: true, role: 'admin' };
     }
 
-    // 2. Check Realtime Database /users for admin accounts (timeout-protected)
+    // 3. Check Supabase members / users for admin role
     try {
       const usersSnap = await withTimeout(get(ref(db, 'users')), 3500);
       if (usersSnap.exists()) {
@@ -795,12 +681,11 @@ export const AuthProvider = ({ children }) => {
           const uPass = String(u.password || u.plainPassword || '').trim();
 
           const isMatchUser =
-            (cleanUser && (
-              cleanUser === uEmail ||
+            cleanUser &&
+            (cleanUser === uEmail ||
               cleanUser.toUpperCase() === uMemberId ||
               cleanUser === uPhone ||
-              cleanUser === uName
-            ));
+              cleanUser === uName);
 
           const isAdminAccount =
             u.is_admin === true ||
@@ -845,7 +730,6 @@ export const AuthProvider = ({ children }) => {
       console.warn('DB admin verify error:', err);
     }
 
-    // 3. Fallback: If password entered is a valid Master Admin Password, grant full access cleanly
     if (isMasterPassword) {
       const adminData = {
         uid: 'head_office_admin',
@@ -878,13 +762,9 @@ export const AuthProvider = ({ children }) => {
       return { success: true, role: 'admin' };
     }
 
-    // 4. Strictly reject normal members or invalid credentials
     throw new Error('केवल अधिकृत व्यवस्थापक ही एडमिन पैनल में लॉगिन कर सकते हैं। सदस्य कृपया मेंबर पोर्टल (Member Login) में लॉगिन करें।');
   };
 
-  /**
-   * Quick master admin session activator helper
-   */
   const adminQuickAccess = () => {
     const adminData = {
       uid: 'head_office_admin',
@@ -917,7 +797,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   /**
-   * Update Member Profile Details in Firebase RTDB
+   * Update Member Profile Details in Supabase
    */
   const updateProfile = async (updates) => {
     if (!user && !member) throw new Error('Not logged in');
@@ -927,9 +807,6 @@ export const AuthProvider = ({ children }) => {
     setMember((prev) => ({ ...prev, ...updates }));
   };
 
-  /**
-   * Admin Sign out
-   */
   const adminLogout = () => {
     setIsAdmin(false);
     try {
@@ -937,14 +814,11 @@ export const AuthProvider = ({ children }) => {
     } catch {}
   };
 
-  /**
-   * Sign out
-   */
   const logout = async () => {
     try {
-      await firebaseSignOut(auth);
-    } catch (e) {
-      console.warn('Firebase signOut error:', e);
+      await supabase.auth.signOut();
+    } catch {
+      // Ignore if no Supabase Auth session active
     }
     setUser(null);
     setMember(null);
@@ -953,6 +827,17 @@ export const AuthProvider = ({ children }) => {
       localStorage.removeItem('ucwf_member_session');
       localStorage.removeItem('ucwf_admin_session');
     } catch {}
+  };
+
+  const loginWithGoogle = async () => {
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/dashboard`,
+      },
+    });
+    if (error) throw error;
+    return data;
   };
 
   const value = {

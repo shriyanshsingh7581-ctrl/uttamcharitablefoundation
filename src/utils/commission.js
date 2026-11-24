@@ -9,8 +9,7 @@
  * - Universal sponsor resolution (Member ID, last 4+ digits, 10-digit phone, UID)
  */
 
-import { db, ref, get, update, push, set } from '../lib/firebase';
-import { whenAdapterReady } from '../lib/rtdbFirestoreAdapter';
+import { db, ref, get, update, push, set, whenAdapterReady } from '../lib/supabase';
 import {
   DEFAULT_LEVEL_RATES,
   round2,
@@ -28,7 +27,7 @@ import {
 export { DEFAULT_LEVEL_RATES, normalizeLevelRates };
 
 /**
- * Fetch saved Level 1 to 12 Commission Rates from Firebase RTDB (/settings/levelRates)
+ * Fetch saved Level 1 to 12 Commission Rates from Supabase (/settings/levelRates)
  * Always normalizes and heals stale/legacy rates to the canonical 50% structure.
  */
 export async function getSavedLevelRates() {
@@ -51,7 +50,7 @@ export async function getSavedSelfBusinessRate() {
 }
 
 /**
- * Save manual Self Business Commission Rate in Firebase RTDB
+ * Save manual Self Business Commission Rate in Supabase
  */
 export async function saveSelfBusinessRate(rate) {
   const num = Math.max(0, Number(rate) || 0);
@@ -60,7 +59,7 @@ export async function saveSelfBusinessRate(rate) {
 }
 
 /**
- * Save manual Level 1 to 12 Commission Rates in Firebase RTDB (/settings/levelRates)
+ * Save manual Level 1 to 12 Commission Rates in Supabase (/settings/levelRates)
  */
 export async function saveLevelRates(ratesMap) {
   const cleanRates = normalizeLevelRates(ratesMap);
@@ -339,6 +338,8 @@ export async function distribute12LevelCommission(memberUidOrId, packageAmount, 
   }
 }
 
+export const distributeCommissions = distribute12LevelCommission;
+
 /**
  * Pure Synchronous Helper for Live 12-Level Tree Metrics
  * Delegates directly to buildMember12LevelReport in mlmUtils.js
@@ -348,7 +349,7 @@ export function calculateMemberTreeMetrics(member, allUsers = {}, levelRates = n
 }
 
 /**
- * 1-Click Recalculate & Fix All Member Commission Balances in Firebase RTDB
+ * 1-Click Recalculate & Fix All Member Commission Balances in Supabase
  */
 export async function syncAndFixAllMemberBalances() {
   await whenAdapterReady();
@@ -437,7 +438,7 @@ export async function syncAndFixAllMemberBalances() {
 }
 
 /**
- * Clean & Reset All Software Test Data in Firebase RTDB
+ * Clean & Reset All Software Test Data in Supabase
  */
 export async function cleanAndResetTestData() {
   const updates = {};

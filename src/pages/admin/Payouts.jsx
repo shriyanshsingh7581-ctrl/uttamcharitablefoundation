@@ -24,8 +24,7 @@ import {
 } from 'lucide-react';
 import SafeQRCode from '../../components/ui/SafeQRCode';
 import AdminLayout from './AdminLayout';
-import { supabase } from '../../lib/supabase';
-import { db, ref, update, get } from '../../lib/firebase';
+import { supabase, db, ref, update, get } from '../../lib/supabase';
 import { GlassCard } from '../../components/ui/GlassCard';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
@@ -90,14 +89,14 @@ export default function Payouts() {
       let rows = data || [];
 
       if (error || rows.length === 0) {
-        // Fallback to Firebase RTDB
+        // Fallback to Supabase Realtime Tree
         try {
           const snap = await get(ref(db, 'payouts'));
           if (snap.exists()) {
             rows = Object.values(snap.val());
           }
         } catch (e) {
-          console.warn('Firebase RTDB payouts metrics note:', e);
+          console.warn('Supabase Realtime payouts metrics note:', e);
         }
       }
 
@@ -144,7 +143,7 @@ export default function Payouts() {
       let list = data || [];
 
       if (error || list.length === 0) {
-        // Fallback to Firebase RTDB
+        // Fallback to Supabase Realtime Tree
         try {
           const snap = await get(ref(db, 'payouts'));
           if (snap.exists()) {
@@ -155,7 +154,7 @@ export default function Payouts() {
             list = allPayouts.filter((p) => p.status === activeTab);
           }
         } catch (e) {
-          console.warn('Firebase RTDB payouts list note:', e);
+          console.warn('Supabase Realtime payouts list note:', e);
         }
       }
 
@@ -342,7 +341,7 @@ export default function Payouts() {
         }
       }
 
-      // Sync Payout and Wallet to Firebase Realtime Database
+      // Sync Payout and Wallet to Supabase Realtime
       try {
         await update(ref(db, `payouts/${w.id}`), {
           status: 'paid',
@@ -358,7 +357,7 @@ export default function Payouts() {
           });
         }
       } catch (fbErr) {
-        console.warn('Firebase RTDB payout update note:', fbErr);
+        console.warn('Supabase Realtime payout update note:', fbErr);
       }
 
       showToast(`Payout of ₹${w.amount} recorded as paid successfully (UTR: ${refId})!`, 'success');

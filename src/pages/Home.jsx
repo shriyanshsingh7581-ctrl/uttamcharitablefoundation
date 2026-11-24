@@ -27,8 +27,7 @@ import {
   AlertCircle,
   Loader2
 } from 'lucide-react';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue } from 'firebase/database';
+import { rtdb, ref, onValue } from '../lib/supabase';
 import { FOUNDATION_DETAILS, PACKAGES, formatINR, safeText } from '../lib/constants';
 import { parseAmount } from '../utils/mlmUtils';
 import { useAuth } from '../contexts/AuthContext';
@@ -80,7 +79,7 @@ export default function Home() {
     }
   };
   
-  // Realtime Live Stats from Firebase RTDB (Starting strictly at 0)
+  // Realtime Live Stats from Supabase (Starting strictly at 0)
   const [stats, setStats] = useState({
     totalMembers: 0,
     totalFundsRaised: 0,

@@ -16,8 +16,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue } from 'firebase/database';
+import { rtdb, ref, onValue } from '../lib/supabase';
 import { formatINR, safeText } from '../lib/constants';
 import { 
   buildMember12LevelReport, 

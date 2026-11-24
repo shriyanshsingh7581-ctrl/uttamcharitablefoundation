@@ -17,8 +17,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue, update, get, set, push } from 'firebase/database';
+import { rtdb, ref, onValue, update, get, set, push } from '../lib/supabase';
 import { formatINR, safeText } from '../lib/constants';
 import { 
   buildMember12LevelReport, 

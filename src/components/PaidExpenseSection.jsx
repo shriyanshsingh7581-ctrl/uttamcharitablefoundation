@@ -16,8 +16,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue, set, remove, push, get } from 'firebase/database';
+import { rtdb, ref, onValue, set, remove, push, get } from '../lib/supabase';
 import { formatINR, safeText } from '../lib/constants';
 import { parseAmount } from '../utils/mlmUtils';
 import { getISTDateString } from '../utils/closingEngine';

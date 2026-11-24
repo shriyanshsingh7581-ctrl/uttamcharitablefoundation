@@ -142,7 +142,7 @@ export default function EventManager() {
         const filePath = `events/${fileName}`;
 
         const { error: uploadError } = await supabase.storage
-          .from('events')
+          .from('uploads')
           .upload(filePath, file, { cacheControl: '3600', upsert: true });
 
         if (uploadError) {
@@ -156,7 +156,7 @@ export default function EventManager() {
           uploadedUrls.push(dataUrl);
         } else {
           const { data: publicData } = supabase.storage
-            .from('events')
+            .from('uploads')
             .getPublicUrl(filePath);
 
           uploadedUrls.push(publicData.publicUrl);

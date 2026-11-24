@@ -22,8 +22,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLanguage } from '../../contexts/LanguageContext';
-import { supabase } from '../../lib/supabase';
-import { db, ref, onValue } from '../../lib/firebase';
+import { supabase, db, ref, onValue } from '../../lib/supabase';
 import { FOUNDATION_NAME, FOUNDATION_NAME_HINDI } from '../../lib/constants';
 import { LoadingSpinner } from '../../components/ui/LoadingSpinner';
 import { Button } from '../../components/ui/Button';
@@ -83,7 +82,7 @@ export default function AdminLayout({ children }) {
       // Optional polling interval every 30 seconds for live updates
       const interval = setInterval(fetchBadgeCounts, 30000);
 
-      // Listen to pending media submissions in Firebase RTDB
+      // Listen to pending media submissions in Supabase Realtime
       const mediaRef = ref(db, 'media_submissions');
       const unsubMedia = onValue(mediaRef, (snapshot) => {
         if (snapshot.exists()) {

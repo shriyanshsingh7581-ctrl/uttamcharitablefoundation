@@ -23,8 +23,7 @@ import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
-import { rtdb } from '../lib/firebase';
-import { ref, get, update } from 'firebase/database';
+import { rtdb, ref, get, update } from '../lib/supabase';
 import { 
   FOUNDATION_DETAILS, 
   PRESIDENT_NAME_HINDI, 
@@ -156,7 +155,7 @@ export default function CertificatePage() {
     setSearchMemberTerm('');
   };
 
-  // Save current customized fields to Firebase RTDB for selected member
+  // Save current customized fields to Supabase for selected member
   const handleSaveToDatabase = async () => {
     const targetUid = selectedUser?.uid || currentUser?.uid;
     if (!targetUid) {
@@ -184,7 +183,7 @@ export default function CertificatePage() {
       showToast(bi('प्रशस्ति पत्र विवरण सफलतापूर्वक सुरक्षित हो गया!', 'Certificate details saved successfully!'), 'success');
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
-      console.error('Failed to save certificate updates to Firebase:', err);
+      console.error('Failed to save certificate updates to Supabase:', err);
       showToast(bi('डाटा सुरक्षित करने में त्रुटि: ', 'Error saving data: ') + err.message, 'error');
     } finally {
       setSavingDb(false);

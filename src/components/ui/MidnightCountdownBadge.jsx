@@ -1,27 +1,36 @@
-import React, { useState, useEffect } from 'react';
-import { Clock, Sparkles } from 'lucide-react';
-import { getTimeUntilMidnightIST, runDailyClosing } from '../../utils/closingEngine';
+import React, { useState, useEffect, useRef } from 'react';
+import { Clock } from 'lucide-react';
+import { getTimeUntilMidnightIST, checkAndTriggerMidnightClosing } from '../../utils/closingEngine';
 import { useLanguage } from '../../contexts/LanguageContext';
 
 export default function MidnightCountdownBadge({ className = '', onMidnightTrigger = null }) {
   const { isHindi } = useLanguage();
   const [countdown, setCountdown] = useState(getTimeUntilMidnightIST());
+  const onTriggerRef = useRef(onMidnightTrigger);
+  const lastTriggeredDateRef = useRef(null);
+
+  useEffect(() => {
+    onTriggerRef.current = onMidnightTrigger;
+  }, [onMidnightTrigger]);
 
   useEffect(() => {
     const timer = setInterval(() => {
       const nextTime = getTimeUntilMidnightIST();
       setCountdown(nextTime);
 
-      // If exactly 00:00:00 (diffMs <= 1000), trigger automated midnight closing
-      if (nextTime.diffMs <= 1000) {
-        runDailyClosing().then(() => {
-          if (onMidnightTrigger) onMidnightTrigger();
-        }).catch(err => console.warn('Auto midnight run:', err));
+      // Trigger at most once per IST day right at midnight (00:00:00)
+      if (nextTime.diffMs <= 1000 && lastTriggeredDateRef.current !== nextTime.currentISTDate) {
+        lastTriggeredDateRef.current = nextTime.currentISTDate;
+        checkAndTriggerMidnightClosing()
+          .then(() => {
+            if (onTriggerRef.current) onTriggerRef.current();
+          })
+          .catch((err) => console.warn('Auto midnight run:', err));
       }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [onMidnightTrigger]);
+  }, []);
 
   return (
     <div className={`inline-flex items-center gap-2 px-3.5 py-1.5 rounded-2xl bg-gradient-to-r from-emerald-950/60 via-slate-900/80 to-teal-950/60 border border-emerald-500/40 text-emerald-200 text-xs shadow-lg backdrop-blur-md ${className}`}>

@@ -27,8 +27,7 @@ import {
   LogIn,
   FileText
 } from 'lucide-react';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue } from 'firebase/database';
+import { rtdb, ref, onValue } from '../lib/supabase';
 import { 
   normalizeLevelRates
 } from '../utils/commission';
@@ -1151,7 +1150,7 @@ export default function MemberReportLookup({
                 Official Computer-Generated Business & Team Statement
               </p>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Uttam Charitable Welfare Foundation • Verified via Firebase RTDB Live Tree Recalculation Engine
+                Uttam Charitable Welfare Foundation • Verified via Live Tree Recalculation Engine
               </p>
             </div>
             <div className="text-right">

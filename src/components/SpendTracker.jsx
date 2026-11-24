@@ -23,8 +23,7 @@ import {
   Sparkles,
   PieChart,
 } from 'lucide-react';
-import { ref, onValue, set } from 'firebase/database';
-import { db } from '../lib/firebase';
+import { db, ref, onValue, set } from '../lib/supabase';
 import { Diya } from './ui/DiwaliDecorations';
 import { useLanguage } from '../contexts/LanguageContext';
 import SafeIcon from './ui/SafeIcon';
@@ -60,7 +59,7 @@ export default function SpendTracker({ showHeader = true, compact = false }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSpend, setSelectedSpend] = useState(null);
 
-  // Sync with Firebase Realtime Database
+  // Sync with Supabase Realtime Database
   useEffect(() => {
     try {
       const spendsRef = ref(db, 'spends');

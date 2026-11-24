@@ -34,9 +34,7 @@ import {
   X
 } from 'lucide-react'
 
-import { supabase } from '../lib/supabase'
-import { rtdb } from '../lib/firebase'
-import { ref, update as rtdbUpdate } from 'firebase/database'
+import { supabase, rtdb, ref, update as rtdbUpdate } from '../lib/supabase'
 import { uploadToCloudinary } from '../lib/cloudinary'
 import { useAuth } from '../contexts/AuthContext'
 import {
@@ -208,12 +206,12 @@ export default function Profile() {
             const fileName = `${member.id}-${Date.now()}.${fileExt}`
             const filePath = `avatars/${fileName}`
             const { error: uploadError } = await supabase.storage
-              .from('avatars')
+              .from('uploads')
               .upload(filePath, photoFile, { upsert: true })
 
             if (!uploadError) {
               const { data: publicUrlData } = supabase.storage
-                .from('avatars')
+                .from('uploads')
                 .getPublicUrl(filePath)
               if (publicUrlData?.publicUrl) {
                 finalPhotoUrl = publicUrlData.publicUrl
@@ -225,7 +223,7 @@ export default function Profile() {
         }
       }
 
-      // Sync with Firebase Realtime Database
+      // Sync with Supabase Realtime Database
       const targetUid = member.uid || member.id;
       if (targetUid) {
         try {

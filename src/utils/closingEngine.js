@@ -1,5 +1,4 @@
-import { rtdb, ref, get, update } from '../lib/firebase';
-import { whenAdapterReady } from '../lib/rtdbFirestoreAdapter';
+import { rtdb, ref, get, update, whenAdapterReady } from '../lib/supabase';
 import {
   DEFAULT_LEVEL_RATES,
   round2,
@@ -202,7 +201,6 @@ export async function runDailyClosing(targetDateStr = null) {
       };
 
       memberStatements[uid] = statement;
-      updates[`/users/${uid}/closingHistory/${closingDate}`] = statement;
 
       globalSelfBusiness = round2(globalSelfBusiness + selfBiz);
       globalDirectBusiness = round2(globalDirectBusiness + directBiz);
@@ -258,11 +256,23 @@ export async function runDailyClosing(targetDateStr = null) {
 export async function checkAndTriggerMidnightClosing() {
   try {
     const todayIST = getISTDateString();
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage.getItem('ucwf_last_auto_closing_date') === todayIST) {
+        return { success: true, alreadyClosed: true, closingDate: todayIST };
+      }
+    } catch {}
+
     const lastClosingSnap = await get(ref(rtdb, 'settings/lastClosingDate'));
     const lastClosedDate = lastClosingSnap.exists() ? lastClosingSnap.val() : null;
 
     if (lastClosedDate !== todayIST) {
-      return await runDailyClosing(todayIST);
+      const res = await runDailyClosing(todayIST);
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('ucwf_last_auto_closing_date', todayIST);
+        }
+      } catch {}
+      return res;
     }
     return { success: true, alreadyClosed: true, closingDate: todayIST };
   } catch (err) {
@@ -308,7 +318,7 @@ export async function autoMigrateAndRecalculateUsers() {
 }
 
 /**
- * Clean & Reset All Software Test Data in Firebase RTDB
+ * Clean & Reset All Software Test Data in Supabase
  */
 export async function cleanAndResetTestData() {
   const updates = {};

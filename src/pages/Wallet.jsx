@@ -19,8 +19,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue, push, set, update } from 'firebase/database';
+import { rtdb, ref, onValue, push, set, update } from '../lib/supabase';
 import { formatINR, safeText } from '../lib/constants';
 import { buildMember12LevelReport, round2 } from '../utils/mlmUtils';
 

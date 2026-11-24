@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { db, ref, get, update } from '../lib/firebase';
-import { whenAdapterReady } from '../lib/rtdbFirestoreAdapter';
+import { db, ref, get, update, whenAdapterReady } from '../lib/supabase';
 import {
   normalizeSponsorId,
   parseAmount,
@@ -8,12 +7,11 @@ import {
 
 /**
  * Universal Self-Healing Data Integrity & Anti-Regression Guard
- * Safely scans after local IndexedDB hydration completes and fixes:
+ * Safely scans after local IndexedDB & Supabase hydration completes and fixes:
  * 1. Missing memberId or name
  * 2. Partial or lowercase sponsorId (e.g. '6401' -> 'UCWF-2026-6401')
  * 3. Missing members recovered from payment_requests
  * 4. Auto-activates non-blocked members
- * Note: Never writes unlisted schema fields (like totalBusiness) so Firestore rules always stay valid.
  */
 export function useDataIntegrityGuard() {
   const [isHealed, setIsHealed] = useState(false);

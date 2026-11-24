@@ -13,11 +13,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-      'firebase/database': path.resolve(__dirname, './src/lib/rtdbFirestoreAdapter.js'),
     },
-  },
-  optimizeDeps: {
-    exclude: ['firebase/database'],
   },
   server: {
     port: 3000,

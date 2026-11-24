@@ -27,8 +27,7 @@ import {
 } from 'lucide-react';
 import AdminLayout from './AdminLayout';
 import RoyalCertificate from '../../components/RoyalCertificate';
-import { supabase } from '../../lib/supabase';
-import { db, ref, onValue, set, remove, get } from '../../lib/firebase';
+import { supabase, db, ref, onValue, set, remove, get } from '../../lib/supabase';
 import {
   FOUNDATION_NAME,
   FOUNDATION_NAME_HINDI,
@@ -52,7 +51,7 @@ export default function CertificateManager() {
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // President Signature in Firebase RTDB
+  // President Signature in Supabase
   const [presidentSignature, setPresidentSignature] = useState(PRESIDENT_STAMP_SIGNATURE_BASE64);
   const [presidentName, setPresidentName] = useState(PRESIDENT_NAME || 'Dr. Rajendra Singh Saini');
   const [savingSignature, setSavingSignature] = useState(false);
@@ -121,7 +120,7 @@ export default function CertificateManager() {
     return `UCWF-CERT-${year}-${randomSeq}`;
   };
 
-  // Listen to President Signature from Firebase RTDB
+  // Listen to President Signature from Supabase
   useEffect(() => {
     try {
       const sigRef = ref(db, 'settings/president_signature');
@@ -144,16 +143,16 @@ export default function CertificateManager() {
         unsubName();
       };
     } catch (e) {
-      console.warn('Firebase signature listener note:', e);
+      console.warn('Supabase signature listener note:', e);
     }
   }, []);
 
-  // Fetch all certificates from Firebase RTDB and Supabase
+  // Fetch all certificates from Supabase Realtime & PostgreSQL
   const fetchAllCertificates = useCallback(async () => {
     setLoading(true);
     const certList = [];
 
-    // 1. Fetch from Firebase Realtime Database /certificates
+    // 1. Fetch from Supabase Realtime /certificates
     try {
       const fbRef = ref(db, 'certificates');
       const snapshot = await get(fbRef);
@@ -163,12 +162,12 @@ export default function CertificateManager() {
           certList.push({
             id: key,
             ...data[key],
-            source: 'firebase',
+            source: 'supabase_realtime',
           });
         });
       }
     } catch (fbErr) {
-      console.warn('Firebase certificates fetch error:', fbErr);
+      console.warn('Supabase realtime certificates fetch error:', fbErr);
     }
 
     // 2. Fetch from Supabase certificates
@@ -202,7 +201,7 @@ export default function CertificateManager() {
     fetchAllCertificates();
   }, [fetchAllCertificates]);
 
-  // Search members autocomplete (searches Firebase RTDB /users first + Supabase)
+  // Search members autocomplete (searches Supabase Realtime /users + Supabase PostgreSQL)
   useEffect(() => {
     const timer = setTimeout(async () => {
       if (!memberSearchTerm.trim() || selectedMember) {
@@ -215,7 +214,7 @@ export default function CertificateManager() {
         const term = memberSearchTerm.trim().toLowerCase();
         const results = [];
 
-        // 1. Search live Firebase RTDB /users
+        // 1. Search live Supabase Realtime /users
         try {
           const snap = await get(ref(db, 'users'));
           if (snap.exists()) {
@@ -242,7 +241,7 @@ export default function CertificateManager() {
             });
           }
         } catch (fbErr) {
-          console.warn('Firebase RTDB user search:', fbErr);
+          console.warn('Supabase realtime user search:', fbErr);
         }
 
         // 2. Also search Supabase if needed
@@ -338,7 +337,7 @@ export default function CertificateManager() {
     });
   };
 
-  // Issue Certificate & Save to Firebase RTDB + Supabase
+  // Issue Certificate & Save to Supabase
   const handleIssueCertificate = async (e) => {
     if (e) e.preventDefault();
 
@@ -374,7 +373,7 @@ export default function CertificateManager() {
     };
 
     try {
-      // 1. Save to Firebase Realtime Database path: /certificates/{certId}
+      // 1. Save to Supabase Realtime path: /certificates/{certId}
       await set(ref(db, `certificates/${certId}`), certPayload);
 
       // 2. Also save to Supabase
@@ -459,7 +458,7 @@ export default function CertificateManager() {
     setDeleteModal((prev) => ({ ...prev, deleting: true }));
 
     try {
-      // 1. Delete from Firebase RTDB
+      // 1. Delete from Supabase Realtime
       await remove(ref(db, `certificates/${certToDelete.id}`));
 
       // 2. Delete from Supabase
@@ -991,7 +990,7 @@ export default function CertificateManager() {
               </div>
 
               <p className="text-[11px] text-slate-400 text-center">
-                This preview updates in real-time. Upon clicking "Save & Issue Certificate", it will be written to Firebase Realtime Database and available for instant download.
+                This preview updates in real-time. Upon clicking "Save & Issue Certificate", it will be written to Supabase Database and available for instant download.
               </p>
             </div>
           </div>
@@ -1066,7 +1065,7 @@ export default function CertificateManager() {
                     className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors flex items-center gap-2 cursor-pointer shadow-xs disabled:opacity-60"
                   >
                     <Upload className="w-4 h-4" />
-                    <span>{savingSignature ? 'Saving to Firebase...' : 'Upload New Signature PNG'}</span>
+                    <span>{savingSignature ? 'Saving to Supabase...' : 'Upload New Signature PNG'}</span>
                   </button>
 
                   <button

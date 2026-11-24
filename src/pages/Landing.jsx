@@ -54,7 +54,7 @@ import SpendTracker from '../components/SpendTracker';
 import SafeIcon from '../components/ui/SafeIcon';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useAuth } from '../contexts/AuthContext';
-import { db, ref, onValue } from '../lib/firebase';
+import { db, ref, onValue } from '../lib/supabase';
 import {
   PACKAGES,
   COMMISSION_RATES,
@@ -123,14 +123,14 @@ export default function Landing() {
   // Showcase Tabs: 'idCard' | 'certificate'
   const [showcaseTab, setShowcaseTab] = useState('certificate');
 
-  // Real-time Database stats from Firebase RTDB
+  // Real-time Database stats from Supabase
   const [realStats, setRealStats] = useState({
     totalSpent: 0,
     totalBeneficiaries: 0,
     totalMembers: 0,
   });
 
-  // Listen to Firebase RTDB for genuine public stats
+  // Listen to Supabase for genuine public stats
   useEffect(() => {
     let unsubSpends = null;
     let unsubMembers = null;

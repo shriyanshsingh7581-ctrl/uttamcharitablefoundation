@@ -1,256 +1,440 @@
--- Enable UUID extension
+-- ============================================================================
+-- UTTAM CHARITABLE WELFARE FOUNDATION (UCWF) - 100% SUPABASE SCHEMA
+-- One-Click Copy-Paste Ready for Supabase SQL Editor (Idempotent & Re-runnable)
+-- ============================================================================
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Members table
-CREATE TABLE public.members (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-  member_id TEXT UNIQUE NOT NULL,
-  full_name TEXT NOT NULL,
-  email TEXT,
-  phone TEXT NOT NULL,
-  blood_group TEXT,
-  address TEXT,
-  photo_url TEXT,
-  referrer_id UUID REFERENCES public.members(id),
-  package_amount INTEGER NOT NULL,
-  tier_name TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'blocked')),
-  payment_utr TEXT,
-  payment_screenshot_url TEXT,
-  is_admin BOOLEAN DEFAULT FALSE,
+-- ----------------------------------------------------------------------------
+-- 1. ADMINS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.admins (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  username TEXT UNIQUE NOT NULL,
+  email TEXT UNIQUE NOT NULL,
+  phone TEXT,
+  password TEXT NOT NULL,
+  full_name TEXT DEFAULT 'Dr. Rajendra Singh Saini',
+  role TEXT DEFAULT 'super_admin',
+  data JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  activated_at TIMESTAMPTZ
-);
-
--- Wallets table
-CREATE TABLE public.wallets (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  member_id UUID REFERENCES public.members(id) ON DELETE CASCADE UNIQUE,
-  balance DECIMAL(12,2) DEFAULT 0,
-  total_earned DECIMAL(12,2) DEFAULT 0,
-  total_withdrawn DECIMAL(12,2) DEFAULT 0,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Transactions table
-CREATE TABLE public.transactions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  wallet_id UUID REFERENCES public.wallets(id),
-  member_id UUID REFERENCES public.members(id),
-  type TEXT NOT NULL CHECK (type IN ('commission', 'withdrawal', 'bonus', 'debit')),
-  amount DECIMAL(12,2) NOT NULL,
-  description TEXT,
-  from_member_id UUID REFERENCES public.members(id),
-  from_member_name TEXT,
-  level INTEGER,
-  package_amount INTEGER,
-  status TEXT DEFAULT 'completed',
+-- ----------------------------------------------------------------------------
+-- 2. MEMBERS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.members (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  uid TEXT,
+  user_id TEXT,
+  member_id TEXT UNIQUE,
+  full_name TEXT NOT NULL DEFAULT 'Member',
+  name TEXT,
+  email TEXT,
+  phone TEXT DEFAULT '',
+  mobile TEXT DEFAULT '',
+  password TEXT DEFAULT '',
+  blood_group TEXT,
+  address TEXT,
+  gender TEXT,
+  photo_url TEXT DEFAULT '',
+  avatar_url TEXT DEFAULT '',
+  sponsor_id TEXT,
+  referrer_id TEXT,
+  package_amount NUMERIC(14,2) DEFAULT 0,
+  package_name TEXT,
+  tier_name TEXT DEFAULT 'Supporter',
+  status TEXT DEFAULT 'active',
+  is_active BOOLEAN DEFAULT TRUE,
+  payment_utr TEXT DEFAULT '',
+  payment_screenshot_url TEXT DEFAULT '',
+  admin_note TEXT DEFAULT '',
+  is_admin BOOLEAN DEFAULT FALSE,
+  data JSONB DEFAULT '{}'::jsonb,
+  activated_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- 3. WALLETS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.wallets (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  user_id TEXT,
+  member_id TEXT UNIQUE,
+  balance NUMERIC(14,2) DEFAULT 0,
+  total_earned NUMERIC(14,2) DEFAULT 0,
+  total_withdrawn NUMERIC(14,2) DEFAULT 0,
+  pending_withdrawn NUMERIC(14,2) DEFAULT 0,
+  data JSONB DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- 4. PAYMENT REQUESTS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.payment_requests (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  user_id TEXT,
+  member_id TEXT,
+  member_name TEXT,
+  amount NUMERIC(14,2) DEFAULT 0,
+  utr_number TEXT,
+  screenshot_url TEXT,
+  status TEXT DEFAULT 'pending',
+  data JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Withdrawals table
-CREATE TABLE public.withdrawals (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  member_id UUID REFERENCES public.members(id),
-  amount DECIMAL(12,2) NOT NULL,
-  bank_details JSONB,
-  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'paid', 'rejected')),
+-- ----------------------------------------------------------------------------
+-- 5. WITHDRAWALS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.withdrawals (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  user_id TEXT,
+  member_id TEXT,
+  amount NUMERIC(14,2) DEFAULT 0,
+  bank_details JSONB DEFAULT '{}'::jsonb,
+  status TEXT DEFAULT 'pending',
   reference_id TEXT,
   admin_note TEXT,
+  admin_notes TEXT,
+  processed_at TIMESTAMPTZ,
+  data JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  processed_at TIMESTAMPTZ
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Events table
-CREATE TABLE public.events (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  title TEXT NOT NULL,
-  title_hindi TEXT,
+-- ----------------------------------------------------------------------------
+-- 6. TRANSACTIONS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.transactions (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  user_id TEXT,
+  member_id TEXT,
+  wallet_id TEXT,
+  from_user_id TEXT,
+  from_member_id TEXT,
+  from_member_name TEXT,
+  amount NUMERIC(14,2) DEFAULT 0,
+  type TEXT DEFAULT 'level_income',
+  level INTEGER,
+  package_amount NUMERIC(14,2),
   description TEXT,
-  event_date TIMESTAMPTZ,
-  venue TEXT,
-  image_url TEXT,
-  gallery JSONB DEFAULT '[]'::jsonb,
-  is_published BOOLEAN DEFAULT TRUE,
+  status TEXT DEFAULT 'completed',
+  data JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Certificates table
-CREATE TABLE public.certificates (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  member_id UUID REFERENCES public.members(id),
-  title TEXT NOT NULL,
+-- ----------------------------------------------------------------------------
+-- 7. PAYOUTS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.payouts (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  user_id TEXT,
+  member_id TEXT,
+  member_name TEXT,
+  amount NUMERIC(14,2) DEFAULT 0,
+  tds NUMERIC(14,2) DEFAULT 0,
+  trust_charge NUMERIC(14,2) DEFAULT 0,
+  net_payable NUMERIC(14,2) DEFAULT 0,
+  payment_mode TEXT DEFAULT 'Bank Transfer',
+  reference_no TEXT,
+  reference_id TEXT,
+  admin_note TEXT,
+  status TEXT DEFAULT 'paid',
+  closing_date TEXT,
+  processed_at TIMESTAMPTZ,
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- 8. DAILY CLOSINGS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.daily_closings (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  closing_no INTEGER DEFAULT 1,
+  closing_date TEXT,
+  total_turnover NUMERIC(14,2) DEFAULT 0,
+  total_distributed NUMERIC(14,2) DEFAULT 0,
+  trust_fund NUMERIC(14,2) DEFAULT 0,
+  members_count INTEGER DEFAULT 0,
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- 9. SPENDS / EXPENSES TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.spends (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  title TEXT NOT NULL DEFAULT 'Trust Expense',
+  category TEXT DEFAULT 'Welfare',
+  amount NUMERIC(14,2) DEFAULT 0,
+  spend_date TEXT,
+  beneficiary TEXT,
+  receipt_url TEXT,
+  description TEXT,
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- 10. EVENTS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.events (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  title TEXT NOT NULL DEFAULT 'UCWF Event',
+  title_hindi TEXT,
+  description TEXT,
+  date TEXT,
+  event_date TIMESTAMPTZ,
+  time TEXT,
+  location TEXT,
+  venue TEXT,
+  category TEXT DEFAULT 'Social Welfare',
+  image_url TEXT,
+  gallery JSONB DEFAULT '[]'::jsonb,
+  status TEXT DEFAULT 'upcoming',
+  is_published BOOLEAN DEFAULT TRUE,
+  attendees_count INTEGER DEFAULT 0,
+  funds_spent NUMERIC(14,2) DEFAULT 0,
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- 11. MEDIA APPROVALS / SUBMISSIONS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.media_approvals (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  user_id TEXT,
+  member_id TEXT,
+  member_name TEXT,
+  title TEXT,
+  description TEXT,
+  media_url TEXT,
+  media_type TEXT DEFAULT 'image',
+  category TEXT DEFAULT 'Event',
+  status TEXT DEFAULT 'pending',
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- 12. MEDIA GALLERY TABLE (Videos & Posters)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.media_gallery (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  media_type TEXT DEFAULT 'posters',
+  title TEXT,
+  url TEXT,
+  thumbnail_url TEXT,
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ----------------------------------------------------------------------------
+-- 13. CERTIFICATES TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.certificates (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  member_id TEXT,
+  user_id TEXT,
+  certificate_no TEXT,
+  certificate_number TEXT UNIQUE,
+  recipient_name TEXT,
+  father_name TEXT,
+  certificate_type TEXT DEFAULT 'Appreciation',
+  title TEXT DEFAULT 'Certificate of Appreciation',
   title_hindi TEXT,
   description TEXT,
   description_hindi TEXT,
   awarded_by TEXT DEFAULT 'Uttam Charitable Welfare Foundation',
-  certificate_number TEXT UNIQUE,
+  issue_date TEXT,
+  issued_by TEXT DEFAULT 'Dr. Rajendra Singh Saini',
+  status TEXT DEFAULT 'active',
+  data JSONB DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Indexes
-CREATE INDEX idx_members_user_id ON public.members(user_id);
-CREATE INDEX idx_members_referrer_id ON public.members(referrer_id);
-CREATE INDEX idx_members_status ON public.members(status);
-CREATE INDEX idx_members_member_id ON public.members(member_id);
-CREATE INDEX idx_transactions_member_id ON public.transactions(member_id);
-CREATE INDEX idx_transactions_wallet_id ON public.transactions(wallet_id);
-CREATE INDEX idx_withdrawals_member_id ON public.withdrawals(member_id);
-CREATE INDEX idx_withdrawals_status ON public.withdrawals(status);
-CREATE INDEX idx_certificates_member_id ON public.certificates(member_id);
-
--- RLS Policies
-ALTER TABLE public.members ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.wallets ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.withdrawals ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.certificates ENABLE ROW LEVEL SECURITY;
-
--- Members policies
-CREATE POLICY "Members can view own profile" ON public.members FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Members can update own profile" ON public.members FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Anyone can insert member" ON public.members FOR INSERT WITH CHECK (true);
-CREATE POLICY "Admins can view all members" ON public.members FOR SELECT USING (
-  EXISTS (SELECT 1 FROM public.members WHERE user_id = auth.uid() AND is_admin = true)
-);
-CREATE POLICY "Admins can update all members" ON public.members FOR UPDATE USING (
-  EXISTS (SELECT 1 FROM public.members WHERE user_id = auth.uid() AND is_admin = true)
+-- ----------------------------------------------------------------------------
+-- 14. SETTINGS TABLE
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.settings (
+  id TEXT PRIMARY KEY,
+  key TEXT UNIQUE,
+  value JSONB DEFAULT '{}'::jsonb,
+  data JSONB DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Public can view referrer info for registration
-CREATE POLICY "Public can view member names" ON public.members FOR SELECT USING (status = 'active');
+-- ----------------------------------------------------------------------------
+-- INDEXES
+-- ----------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_members_member_id ON public.members(member_id);
+CREATE INDEX IF NOT EXISTS idx_members_phone ON public.members(phone);
+CREATE INDEX IF NOT EXISTS idx_members_sponsor_id ON public.members(sponsor_id);
+CREATE INDEX IF NOT EXISTS idx_members_status ON public.members(status);
+CREATE INDEX IF NOT EXISTS idx_wallets_member_id ON public.wallets(member_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_member_id ON public.transactions(member_id);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON public.withdrawals(status);
+CREATE INDEX IF NOT EXISTS idx_payouts_member_id ON public.payouts(member_id);
+CREATE INDEX IF NOT EXISTS idx_media_approvals_status ON public.media_approvals(status);
+CREATE INDEX IF NOT EXISTS idx_certificates_number ON public.certificates(certificate_number);
 
--- Wallets policies  
-CREATE POLICY "Members can view own wallet" ON public.wallets FOR SELECT USING (
-  member_id IN (SELECT id FROM public.members WHERE user_id = auth.uid())
-);
-CREATE POLICY "System can manage wallets" ON public.wallets FOR ALL USING (
-  EXISTS (SELECT 1 FROM public.members WHERE user_id = auth.uid() AND is_admin = true)
-);
+-- ----------------------------------------------------------------------------
+-- SEED DEFAULT ADMIN, ROOT SPONSOR & 12-LEVEL SETTINGS (ON CONFLICT DO NOTHING)
+-- ----------------------------------------------------------------------------
+INSERT INTO public.admins (id, username, email, phone, password, full_name, role)
+VALUES
+  ('head_office_admin', 'admin', 'admin@ucwf.online', '9540648402', 'Admin@2026', 'Dr. Rajendra Singh Saini', 'super_admin'),
+  ('ucwf_admin_org', 'ucwf_admin', 'admin@ucwf.org', '9540648402', 'Uttam@2026', 'Dr. Rajendra Singh Saini', 'super_admin')
+ON CONFLICT DO NOTHING;
 
--- Transactions policies
-CREATE POLICY "Members can view own transactions" ON public.transactions FOR SELECT USING (
-  member_id IN (SELECT id FROM public.members WHERE user_id = auth.uid())
-);
-CREATE POLICY "Admins can manage transactions" ON public.transactions FOR ALL USING (
-  EXISTS (SELECT 1 FROM public.members WHERE user_id = auth.uid() AND is_admin = true)
-);
+INSERT INTO public.members (
+  id, uid, member_id, full_name, name, email, phone, mobile, password,
+  sponsor_id, package_amount, tier_name, status, is_active, is_admin, data
+)
+VALUES (
+  'ucwf_root_0001',
+  'ucwf_root_0001',
+  'UCWF-0001',
+  'Dr. Rajendra Singh Saini',
+  'Dr. Rajendra Singh Saini',
+  'uttamcharitable@gmail.com',
+  '9540648402',
+  '9540648402',
+  'Admin@2026',
+  'ROOT',
+  11000,
+  'Founder Patron',
+  'active',
+  true,
+  true,
+  '{
+    "uid": "ucwf_root_0001",
+    "memberId": "UCWF-0001",
+    "salutation": "Dr.",
+    "name": "Dr. Rajendra Singh Saini",
+    "fullName": "Dr. Rajendra Singh Saini",
+    "padNaam": "National President / Founder",
+    "phone": "9540648402",
+    "email": "uttamcharitable@gmail.com",
+    "sponsorId": "ROOT",
+    "packageAmount": 11000,
+    "selfBusiness": 11000,
+    "status": "active",
+    "isApproved": true,
+    "role": "admin",
+    "is_admin": true
+  }'::jsonb
+)
+ON CONFLICT DO NOTHING;
 
--- Withdrawals policies
-CREATE POLICY "Members can view own withdrawals" ON public.withdrawals FOR SELECT USING (
-  member_id IN (SELECT id FROM public.members WHERE user_id = auth.uid())
-);
-CREATE POLICY "Members can create withdrawals" ON public.withdrawals FOR INSERT WITH CHECK (
-  member_id IN (SELECT id FROM public.members WHERE user_id = auth.uid())
-);
-CREATE POLICY "Admins can manage withdrawals" ON public.withdrawals FOR ALL USING (
-  EXISTS (SELECT 1 FROM public.members WHERE user_id = auth.uid() AND is_admin = true)
-);
+INSERT INTO public.settings (id, key, value, data)
+VALUES
+  (
+    'levelRates',
+    'levelRates',
+    '{"1":20,"2":8,"3":5,"4":4,"5":3,"6":2.5,"7":2,"8":1.5,"9":1,"10":1,"11":1,"12":1}'::jsonb,
+    '{"1":20,"2":8,"3":5,"4":4,"5":3,"6":2.5,"7":2,"8":1.5,"9":1,"10":1,"11":1,"12":1}'::jsonb
+  ),
+  (
+    'selfBusinessRate',
+    'selfBusinessRate',
+    '{"val":0}'::jsonb,
+    '{"val":0}'::jsonb
+  ),
+  (
+    'diwaliTheme',
+    'diwaliTheme',
+    '{"val":false}'::jsonb,
+    '{"val":false}'::jsonb
+  )
+ON CONFLICT (id) DO NOTHING;
 
--- Events policies (public read)
-CREATE POLICY "Anyone can view published events" ON public.events FOR SELECT USING (is_published = true);
-CREATE POLICY "Admins can manage events" ON public.events FOR ALL USING (
-  EXISTS (SELECT 1 FROM public.members WHERE user_id = auth.uid() AND is_admin = true)
-);
+-- ----------------------------------------------------------------------------
+-- GRANTS & NON-BLOCKING RLS POLICIES FOR PUBLISHABLE KEY
+-- ----------------------------------------------------------------------------
+GRANT USAGE ON SCHEMA public TO anon, authenticated;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated;
 
--- Certificates policies
-CREATE POLICY "Members can view own certificates" ON public.certificates FOR SELECT USING (
-  member_id IN (SELECT id FROM public.members WHERE user_id = auth.uid())
-);
-CREATE POLICY "Admins can manage certificates" ON public.certificates FOR ALL USING (
-  EXISTS (SELECT 1 FROM public.members WHERE user_id = auth.uid() AND is_admin = true)
-);
-
--- Function to generate member ID
-CREATE OR REPLACE FUNCTION generate_member_id()
-RETURNS TRIGGER AS $$
+DO $$
 DECLARE
-  year_part TEXT;
-  seq_num INTEGER;
-  new_member_id TEXT;
+  tbl TEXT;
+  tables TEXT[] := ARRAY[
+    'admins', 'members', 'wallets', 'payment_requests', 'withdrawals',
+    'transactions', 'payouts', 'daily_closings', 'spends', 'events',
+    'media_approvals', 'media_gallery', 'certificates', 'settings'
+  ];
 BEGIN
-  year_part := EXTRACT(YEAR FROM NOW())::TEXT;
-  SELECT COALESCE(MAX(CAST(SUBSTRING(member_id FROM 10) AS INTEGER)), 0) + 1
-  INTO seq_num
-  FROM public.members
-  WHERE member_id LIKE 'UCWF-' || year_part || '-%';
-  new_member_id := 'UCWF-' || year_part || '-' || LPAD(seq_num::TEXT, 4, '0');
-  NEW.member_id := new_member_id;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER set_member_id
-  BEFORE INSERT ON public.members
-  FOR EACH ROW
-  WHEN (NEW.member_id IS NULL OR NEW.member_id = '')
-  EXECUTE FUNCTION generate_member_id();
-
--- Function to create wallet on member activation
-CREATE OR REPLACE FUNCTION create_wallet_on_activation()
-RETURNS TRIGGER AS $$
-BEGIN
-  IF NEW.status = 'active' AND OLD.status = 'pending' THEN
-    INSERT INTO public.wallets (member_id) VALUES (NEW.id) ON CONFLICT (member_id) DO NOTHING;
-    NEW.activated_at := NOW();
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER on_member_activation
-  BEFORE UPDATE ON public.members
-  FOR EACH ROW
-  EXECUTE FUNCTION create_wallet_on_activation();
-
--- Function to distribute commissions across 12 levels
-CREATE OR REPLACE FUNCTION distribute_commissions(activated_member_id UUID)
-RETURNS VOID AS $$
-DECLARE
-  rates DECIMAL[] := ARRAY[0.20, 0.06, 0.05, 0.04, 0.03, 0.025, 0.02, 0.015, 0.015, 0.015, 0.01, 0.02];
-  current_member RECORD;
-  upline_id UUID;
-  pkg_amount INTEGER;
-  member_name TEXT;
-  commission DECIMAL;
-  i INTEGER := 1;
-BEGIN
-  SELECT referrer_id, package_amount, full_name INTO current_member
-  FROM public.members WHERE id = activated_member_id;
-  
-  upline_id := current_member.referrer_id;
-  pkg_amount := current_member.package_amount;
-  member_name := current_member.full_name;
-  
-  WHILE upline_id IS NOT NULL AND i <= 12 LOOP
-    commission := pkg_amount * rates[i];
-    
-    -- Credit wallet
-    UPDATE public.wallets 
-    SET balance = balance + commission,
-        total_earned = total_earned + commission,
-        updated_at = NOW()
-    WHERE member_id = upline_id;
-    
-    -- Record transaction
-    INSERT INTO public.transactions (wallet_id, member_id, type, amount, description, from_member_id, from_member_name, level, package_amount)
-    VALUES (
-      (SELECT id FROM public.wallets WHERE member_id = upline_id),
-      upline_id,
-      'commission',
-      commission,
-      'Level ' || i || ' commission from ' || member_name,
-      activated_member_id,
-      member_name,
-      i,
-      pkg_amount
+  FOREACH tbl IN ARRAY tables LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY;', tbl);
+    EXECUTE format('DROP POLICY IF EXISTS "allow_all_%s" ON public.%I;', tbl, tbl);
+    EXECUTE format(
+      'CREATE POLICY "allow_all_%s" ON public.%I FOR ALL TO public USING (true) WITH CHECK (true);',
+      tbl, tbl
     );
-    
-    -- Move to next upline
-    SELECT referrer_id INTO upline_id FROM public.members WHERE id = upline_id;
-    i := i + 1;
   END LOOP;
-END;
-$$ LANGUAGE plpgsql;
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- SUPABASE STORAGE: 'uploads' BUCKET & PUBLIC ACCESS POLICIES
+-- ----------------------------------------------------------------------------
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('uploads', 'uploads', true)
+ON CONFLICT (id) DO UPDATE SET public = true;
+
+DROP POLICY IF EXISTS "uploads_public_read" ON storage.objects;
+DROP POLICY IF EXISTS "uploads_public_insert" ON storage.objects;
+DROP POLICY IF EXISTS "uploads_public_update" ON storage.objects;
+DROP POLICY IF EXISTS "uploads_public_delete" ON storage.objects;
+
+CREATE POLICY "uploads_public_read"
+  ON storage.objects FOR SELECT TO public
+  USING (bucket_id = 'uploads');
+
+CREATE POLICY "uploads_public_insert"
+  ON storage.objects FOR INSERT TO public
+  WITH CHECK (bucket_id = 'uploads');
+
+CREATE POLICY "uploads_public_update"
+  ON storage.objects FOR UPDATE TO public
+  USING (bucket_id = 'uploads')
+  WITH CHECK (bucket_id = 'uploads');
+
+CREATE POLICY "uploads_public_delete"
+  ON storage.objects FOR DELETE TO public
+  USING (bucket_id = 'uploads');
+
+-- ----------------------------------------------------------------------------
+-- ENABLE SUPABASE REALTIME ON ALL TABLES (SAFE & IDEMPOTENT)
+-- ----------------------------------------------------------------------------
+DO $$
+DECLARE
+  tbl TEXT;
+  tables TEXT[] := ARRAY[
+    'admins', 'members', 'wallets', 'payment_requests', 'withdrawals',
+    'transactions', 'payouts', 'daily_closings', 'spends', 'events',
+    'media_approvals', 'media_gallery', 'certificates', 'settings'
+  ];
+BEGIN
+  FOREACH tbl IN ARRAY tables LOOP
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime'
+        AND schemaname = 'public'
+        AND tablename = tbl
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I;', tbl);
+    END IF;
+  END LOOP;
+END $$;

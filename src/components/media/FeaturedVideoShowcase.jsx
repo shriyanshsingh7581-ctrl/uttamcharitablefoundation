@@ -12,8 +12,7 @@ import {
   ChevronRight,
   ExternalLink
 } from 'lucide-react';
-import { rtdb } from '../../lib/firebase';
-import { ref, onValue } from 'firebase/database';
+import { rtdb, ref, onValue } from '../../lib/supabase';
 import GlowingDiya from '../diwali/GlowingDiya';
 import { safeText } from '../../lib/constants';
 
@@ -44,7 +43,7 @@ export default function FeaturedVideoShowcase({ className = '', compact = false 
   const iframeRef = useRef(null);
   const containerRef = useRef(null);
 
-  // 1. Listen to Firebase RTDB for active videos
+  // 1. Listen to Supabase Realtime for active videos
   useEffect(() => {
     const videosRef = ref(rtdb, 'media_gallery/videos');
     const unsubscribe = onValue(videosRef, (snapshot) => {

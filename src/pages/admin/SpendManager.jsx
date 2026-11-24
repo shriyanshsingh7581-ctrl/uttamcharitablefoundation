@@ -23,8 +23,7 @@ import {
   ExternalLink,
   X,
 } from 'lucide-react';
-import { ref, onValue, set, remove, push } from 'firebase/database';
-import { db } from '../../lib/firebase';
+import { db, ref, onValue, set, remove, push } from '../../lib/supabase';
 import AdminLayout from './AdminLayout';
 import { CATEGORY_ICONS, CATEGORY_COLORS } from '../../components/SpendTracker';
 import { Diya } from '../../components/ui/DiwaliDecorations';
@@ -56,7 +55,7 @@ export default function SpendManager() {
     description: '',
   });
 
-  // Sync spends from Firebase RTDB
+  // Sync spends from Supabase Realtime
   useEffect(() => {
     try {
       const spendsRef = ref(db, 'spends');

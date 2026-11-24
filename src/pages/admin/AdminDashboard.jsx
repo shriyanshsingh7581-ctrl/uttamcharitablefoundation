@@ -26,8 +26,7 @@ import {
   Camera,
 } from 'lucide-react';
 import AdminLayout from './AdminLayout';
-import { supabase } from '../../lib/supabase';
-import { db, ref, get, update, remove } from '../../lib/firebase';
+import { supabase, db, ref, get, update, remove } from '../../lib/supabase';
 import { PACKAGES } from '../../lib/constants';
 import { parseAmount } from '../../utils/mlmUtils';
 import { useLanguage } from '../../contexts/LanguageContext';
@@ -90,7 +89,7 @@ export default function AdminDashboard() {
         0
       );
 
-      // 3. Fallback and merge with Firebase Realtime Database
+      // 3. Merge with Supabase Realtime state
       let rtdbSpendsTotal = 0;
       try {
         const spendsSnap = await get(ref(db, 'spends'));
@@ -162,7 +161,7 @@ export default function AdminDashboard() {
           }
         }
       } catch (fbErr) {
-        console.warn('Firebase RTDB stats fetch note:', fbErr);
+        console.warn('Supabase Realtime stats fetch note:', fbErr);
       }
 
       const totalMembers = membersList.length;

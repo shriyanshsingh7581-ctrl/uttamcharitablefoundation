@@ -22,8 +22,7 @@ import {
   ArrowRight,
   UserPlus
 } from 'lucide-react';
-import { rtdb } from '../lib/firebase';
-import { ref, get, onValue } from 'firebase/database';
+import { rtdb, ref, get, onValue } from '../lib/supabase';
 import { MLM_COMMISSION_RATES, formatCurrency, safeText } from '../lib/constants';
 import { 
   computeUnlimitedGenerationTree, 
@@ -58,7 +57,7 @@ export default function GenerationTreeChart({
   const [selectedNodeDetails, setSelectedNodeDetails] = useState(null);
   const [zoomLevel, setZoomLevel] = useState(100);
 
-  // Load users from Firebase RTDB if not provided
+  // Load users from Supabase if not provided
   useEffect(() => {
     if (customAllUsers && Object.keys(customAllUsers).length > 0) {
       setUsersMap(customAllUsers);

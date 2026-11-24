@@ -24,7 +24,7 @@ import {
   Maximize2,
 } from 'lucide-react';
 import AdminLayout from './AdminLayout';
-import { db, ref, onValue, update, remove } from '../../lib/firebase';
+import { db, ref, onValue, update, remove } from '../../lib/supabase';
 import { useLanguage } from '../../contexts/LanguageContext';
 
 export default function AdminMediaApprovals() {
@@ -44,7 +44,7 @@ export default function AdminMediaApprovals() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  // Real-time Firebase Listener for /media_submissions
+  // Real-time Supabase Listener for /media_submissions
   useEffect(() => {
     setLoading(true);
     const mediaRef = ref(db, 'media_submissions');
@@ -68,7 +68,7 @@ export default function AdminMediaApprovals() {
         setLoading(false);
       },
       (error) => {
-        console.error('Firebase media_submissions listener error:', error);
+        console.error('Supabase media_submissions listener error:', error);
         setLoading(false);
       }
     );
@@ -202,7 +202,7 @@ export default function AdminMediaApprovals() {
                 <Camera className="w-3.5 h-3.5 text-emerald-700" />
                 {isHindi ? 'मीडिया अनुमोदन केंद्र' : 'Media Verification Center'}
               </span>
-              <span className="text-xs text-gray-500 font-medium">Cloudinary & Firebase RTDB</span>
+              <span className="text-xs text-gray-500 font-medium">Supabase Storage & Realtime</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-black text-gray-900 tracking-tight mt-1 flex items-center gap-3">
               <span>{isHindi ? 'फोटो व वीडियो अनुमोदन' : 'Media Submissions & Approvals'}</span>

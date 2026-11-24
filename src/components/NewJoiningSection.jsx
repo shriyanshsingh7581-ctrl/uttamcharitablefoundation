@@ -17,8 +17,7 @@ import {
   Users
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { rtdb } from '../lib/firebase';
-import { ref, onValue, push, set } from 'firebase/database';
+import { rtdb, ref, onValue, push, set } from '../lib/supabase';
 import { formatINR, safeText } from '../lib/constants';
 import { distribute12LevelCommission } from '../utils/commission';
 import {

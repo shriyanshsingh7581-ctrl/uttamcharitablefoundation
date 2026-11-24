@@ -10,8 +10,7 @@ import {
   FileCheck
 } from 'lucide-react';
 import { uploadToCloudinary } from '../lib/cloudinary';
-import { rtdb } from '../lib/firebase';
-import { ref, push, set } from 'firebase/database';
+import { rtdb, ref, push, set } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { safeText } from '../lib/constants';
 
@@ -71,7 +70,7 @@ export default function MediaUploadModal({ isOpen, onClose, onSuccess }) {
         setUploadProgress(progress);
       });
 
-      // 2. Save submission reference to Firebase RTDB
+      // 2. Save submission reference to Supabase
       const submissionsRef = ref(rtdb, 'media_submissions');
       const newSubRef = push(submissionsRef);
       const submissionId = newSubRef.key;
